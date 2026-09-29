@@ -9,3 +9,4 @@ langchain-text-splitters
 langchain-community
 pymupdf
 markitdown[all]
+jev-reranker==0.1.2

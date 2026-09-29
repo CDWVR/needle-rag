@@ -4,5 +4,7 @@ __pycache__/
 .env
 backend/vector_store/
 backend/chroma_store/
+backend/uploads/
+backend/workspace.db
 temp_*
 .vscode/

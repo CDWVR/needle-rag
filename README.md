@@ -13,8 +13,8 @@
 ## ✨ Features
 
 - **🌐 Global Database Chat** — Query your entire unified database, or isolate to a single document.
-- **⚡ True Hybrid Search** — Runs parallel semantic (Vector) and exact-match (Keyword) searches to never miss a fact or serial number.
-- **⚖️ Reciprocal Rank Fusion (RRF)** — Mathematically merges Vector and Keyword results using a `k=60` consensus algorithm, featuring a dynamic *relative drop-off gate* to eliminate hallucinations before they reach the LLM.
+- **⚡ Vector search with a similarity gate** — Embeds the question, retrieves the top children, and drops hits below an absolute cosine floor or a drop-off from the best match. Exact keyword hits are extra candidates, not a substitute for that gate.
+- **⚖️ Jev reranking** — [Jev](https://pypi.org/project/jev-reranker/) scores every surviving passage for usefulness as evidence and discards the ones that only share a topic. Parent chunks are loaded after that decision.
 - **🏗️ Parent-Child Chunking** — Granular 400-char child chunks for laser-focused semantic retrieval, seamlessly mapped back to massive 2,000-char parent chunks to preserve surrounding context.
 - **📊 Metadata Scaffolding** — Automatically extracts Markdown headers (Chapters/Sections) to provide spatial awareness to citations.
 - **📄 Multi-Modal Parsing** — Processes text-based PDFs, DOCX, PPTX, and XLSX using `PyMuPDF` and Microsoft's `MarkItDown`.
@@ -50,11 +50,15 @@
 │  │           │                                          │
 │  └─────┬─────┘                                          │
 │        ↓                                                │
-│  [4] HYBRID RETRIEVAL (Vector + BM25)                   │
+│  [4] TOP-K VECTOR SEARCH + SIMILARITY THRESHOLD        │
 │        ↓                                                │
-│  [5] RRF FUSION & DYNAMIC DROP-OFF GATING               │
+│  [5] JEV RERANKER (keep useful evidence only)           │
 │        ↓                                                │
-│  [6] GEMINI 2.5 LLM SYNTHESIS → Streamed Answer         │
+│  [6] FETCH PARENT CHUNK → PROMPT + CITATIONS            │
+│        ↓                                                │
+│  [7] OPENROUTER DRAFT → GROUNDED / SAFE / RELEVANT     │
+│        ↓                                                │
+│     Cited answer, or a low-confidence no-answer         │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -66,7 +70,8 @@
 |-----------|-----------|---------|
 | **Backend** | FastAPI | Async HTTP server with Background Tasks |
 | **Error Handling** | Exception Middleware | Graceful rejection of corrupted/encrypted files |
-| **LLM Synthesis** | Google Gemini 2.5 Flash | Final answer generation using injected context |
+| **LLM Synthesis** | OpenRouter (`google/gemini-2.5-flash` by default) | Cited draft and the grounding check |
+| **Reranker** | Jev `typesafe/jev-1.13` via OpenRouter | Keeps only passages that are useful evidence |
 | **Local Embeddings** | `all-MiniLM-L6-v2` | Open-source, CPU-optimized semantic vectors |
 | **Vector DB** | ChromaDB | Persistent vector similarity search |
 | **Keyword DB** | SQLite FTS5 | Blazing fast parallel sparse indexing (BM25) |
@@ -80,13 +85,13 @@
 ### 1. Ingestion & Scaffolding
 When a document is uploaded, it is passed to either `PyMuPDF` (to preserve exact page numbers) or `MarkItDown` (to parse Word, Excel, PPTX). The `MarkdownHeaderTextSplitter` injects hierarchical scaffolding into the chunk metadata (e.g. `[Chapter 2 > Safety]`).
 
-### 2. Parent-Child Chunking
-To prevent the classic RAG failure of "too little context" vs "diluted search meaning", text is split into **2,000-character Parent chunks**. These are then chopped into **400-character Child chunks** with 50-character overlaps. The DB only embeds the children, but when a child is matched during a query, the LLM is fed the entire 2,000-character parent.
+### 2. Parent-Child Chunking and Index Cards
+Text is split into **2,000-character parent chunks**, then into **400-character children**. Each parent also gets a short index card so a heading-level summary can be retrieved. Only those units are embedded. Parent text is stored separately and loaded after Jev decides which hits are worth expanding.
 
-### 3. Retrieval & Reciprocal Rank Fusion (RRF)
-When a user asks a question, the system queries ChromaDB (Vector) and SQLite (FTS5) simultaneously. It pulls the Top 15 chunks from both engines. 
+### 3. Retrieval, Jev, and the answer check
+The question is tokenized and embedded with the same `all-MiniLM-L6-v2` model recorded on the active index. Search refuses to run when that version is incompatible. Vector hits below cosine similarity `0.30`, or below 70% of the best hit, are dropped. Keyword matches can still be offered to Jev, which then keeps passages at relevance `0.20` or higher. The top parents are assembled with citations. An OpenRouter chat model writes a draft, and a second pass releases it only when it is grounded, safe, and relevant. Otherwise the user gets a no-answer fallback and no citations. Jev itself is called through OpenRouter at `https://openrouter.ai/api/v1/systemone`, so one `OPENROUTER_API_KEY` covers reranking and answers.
 
-Before fusion, a **Dynamic Drop-off Gate** inspects the raw vector distances. If scores fall off a cliff (e.g. < 70% of the top match) or are objectively terrible, they are incinerated instantly ("Null over Hallucination"). The remaining chunks are mathematically fused using the industry-standard RRF algorithm (`k=60`). The final absolute Top 5 unique parent contexts are passed to the LLM.
+Uploads and deletes write the active index. `POST /api/index/refresh` rebuilds a new collection and publishes it only after the copied count matches. Deletes are applied to every non-failed version in the registry.
 
 ---
 
@@ -108,7 +113,7 @@ The live demonstration is hosted on Render's free tier, which imposes a strict *
 ### Prerequisites
 
 - Python 3.13
-- Google Gemini API key ([get free at aistudio.google.com](https://aistudio.google.com))
+- OpenRouter API key ([openrouter.ai/keys](https://openrouter.ai/keys)), used for both [Jev](https://openrouter.ai/typesafe/jev-1.13) and the answer model
 
 ### Setup
 
@@ -126,7 +131,7 @@ pip install -r backend/requirements.txt
 
 # 4. Set your API key
 copy .env.example .env
-# Edit .env and add your GEMINI_API_KEY
+# Edit .env and add OPENROUTER_API_KEY
 
 # 5. Run the server
 cd backend

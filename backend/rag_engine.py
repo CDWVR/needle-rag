@@ -1,70 +1,74 @@
-import os, uuid, textwrap, json, re, sqlite3
-from typing import List, Dict, Any, Optional, Generator
+"""Needle retrieval engine.
+
+Ingestion: parse, parent-child chunks plus an index card, tokenize, embed, and
+write the active index. Query: embed the question, keep the top vector hits
+above the similarity gate, let Jev rerank those passages, then load the parent
+chunk for prompt assembly. The answer is released only when a second check
+marks it grounded, safe, and relevant.
+"""
+
+import logging
+import os
+import re
+import json
+import uuid
+import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any, Dict, Generator, List, Optional
 
+import httpx
 import chromadb
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-
-# New imports for parsing and chunking
 from langchain_community.document_loaders import PyMuPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from markitdown import MarkItDown
+
+from index_store import IndexStore
+from pipeline_logic import (
+    IncompatibleIndex,
+    JevNotConfigured,
+    JevUnavailable,
+    NeedleError,
+    NO_EVIDENCE_FALLBACK,
+    filter_by_similarity,
+    index_card,
+    select_parents,
+    tokenize,
+    validation_fallback,
+    verdict_passes,
+)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-# ── Configuration ────────────────────────────────────────────
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GENERATION_MODEL = "gemini-2.5-flash"
+log = logging.getLogger("needle")
 
-# SOTA: Parent-Child Chunking
+EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
+OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+JEV_ENDPOINT = os.getenv("JEV_ENDPOINT", "https://openrouter.ai/api/v1/systemone").strip()
+JEV_MODEL = os.getenv("JEV_MODEL", "typesafe/jev-1.13").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash").strip()
+
 PARENT_CHUNK_SIZE = 2000
 PARENT_CHUNK_OVERLAP = 200
 CHILD_CHUNK_SIZE = 400
 CHILD_CHUNK_OVERLAP = 50
-TOP_K_CHILDREN = 15 # Retrieve 15 from Vector, 15 from Keyword, then RRF
+TOP_K_CHILDREN = 15
+VECTOR_SIMILARITY_THRESHOLD = 0.30
+VECTOR_RELATIVE_FLOOR = 0.70
+JEV_RELEVANCE_THRESHOLD = 0.20
+MAX_PARENTS = 5
 
 STORE_DIR = os.path.join(os.path.dirname(__file__), "chroma_store")
-if not os.path.exists(STORE_DIR):
-    os.makedirs(STORE_DIR)
+os.makedirs(STORE_DIR, exist_ok=True)
 
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-# ── ChromaDB Setup (Vector Search) ───────────────────────────
 chroma_client = chromadb.PersistentClient(path=STORE_DIR)
-collection = chroma_client.get_or_create_collection(
-    name="documind_sota_local",
-    metadata={"hnsw:space": "cosine"}
-)
+store = IndexStore(os.path.join(STORE_DIR, "bm25_index.db"))
+_mutation_lock = threading.Lock()
 
-# ── SQLite FTS5 Setup (Keyword Search) ───────────────────────
-sqlite_path = os.path.join(STORE_DIR, "bm25_index.db")
-conn = sqlite3.connect(sqlite_path, check_same_thread=False)
-# FTS5 uses a completely virtual table optimized for full text search
-conn.execute('''
-    CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-        document_id UNINDEXED, 
-        chunk_id UNINDEXED, 
-        document_name UNINDEXED,
-        page_number UNINDEXED,
-        header_context UNINDEXED,
-        parent_text,
-        tokenize="porter"
-    )
-''')
-conn.commit()
+_embedding_fn = None
 
-@dataclass
-class RetrievedChunk:
-    text: str # Parent text for maximum context
-    page_number: int
-    chunk_index: int
-    document_id: str
-    document_name: str
-    header_context: str
-    similarity_score: float # Final RRF score
 
 @dataclass
 class DocumentInfo:
@@ -75,56 +79,127 @@ class DocumentInfo:
     file_type: str
     uploaded_at: str
 
-
-# ── Metadata Scaffolding ─────────────────────────────────────
-headers_to_split_on = [
+HEADERS_TO_SPLIT_ON = [
     ("#", "Header 1"),
     ("##", "Header 2"),
     ("###", "Header 3"),
     ("####", "Header 4"),
 ]
-md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on, strip_headers=False)
+md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=HEADERS_TO_SPLIT_ON, strip_headers=False)
+
+SYSTEM_PROMPT = (
+    "You answer questions using only the numbered passages in the user message. "
+    "Cite a passage as [1] or [2] when you use it. "
+    "If the passages do not contain the answer, say that you cannot tell from the documents. "
+    "Do not use outside knowledge."
+)
 
 
-# ── Document parsing & Chunking ──────────────────────────────
-def process_document(
-    file_bytes: bytes,
-    filename: str,
-    file_type: str,
-) -> DocumentInfo:
-    document_id = str(uuid.uuid4())
-    temp_path = f"temp_{document_id}_{filename}"
-    with open(temp_path, "wb") as f:
-        f.write(file_bytes)
-        
+def _embedding_function():
+    global _embedding_fn
+    if _embedding_fn is None:
+        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+        _embedding_fn = DefaultEmbeddingFunction()
+    return _embedding_fn
+
+
+def _embed(texts: List[str]) -> List[List[float]]:
+    if not texts:
+        return []
+    vectors = _embedding_function()(texts)
+    return [[float(value) for value in vector] for vector in vectors]
+
+
+def require_compatible() -> Dict[str, Any]:
+    active = store.ensure_active_version(EMBEDDING_MODEL_ID)
+    if active["embedding_model"] != EMBEDDING_MODEL_ID:
+        raise IncompatibleIndex(
+            "The active index was built with "
+            f"{active['embedding_model']}, which does not match {EMBEDDING_MODEL_ID}. "
+            "Refresh the index before searching it."
+        )
+    return active
+
+
+def index_status() -> Dict[str, Any]:
+    active = store.ensure_active_version(EMBEDDING_MODEL_ID)
+    return {
+        "version_id": active["version_id"],
+        "collection_name": active["collection_name"],
+        "embedding_model": active["embedding_model"],
+        "compatible": active["embedding_model"] == EMBEDDING_MODEL_ID,
+        "expected_embedding_model": EMBEDDING_MODEL_ID,
+        "jev_configured": bool(os.getenv("OPENROUTER_API_KEY", "").strip()),
+        "jev_model": JEV_MODEL,
+        "answer_model": OPENROUTER_MODEL,
+        "similarity_threshold": VECTOR_SIMILARITY_THRESHOLD,
+        "jev_relevance_threshold": JEV_RELEVANCE_THRESHOLD,
+        "index_status": active["status"],
+    }
+
+
+def _collection_for(name: str):
     try:
-        docs = []
-        full_text = ""
-        
-        # 1. Parsing and Metadata Scaffolding
-        md_splits = []
+        return chroma_client.get_collection(name)
+    except Exception:
+        return chroma_client.get_or_create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+
+def _active_collection():
+    active = require_compatible()
+    return _collection_for(active["collection_name"]), active
+
+
+def _header_context(metadata: Dict[str, Any]) -> str:
+    parts = [
+        metadata.get("Header 1", ""),
+        metadata.get("Header 2", ""),
+        metadata.get("Header 3", ""),
+    ]
+    return " > ".join(part for part in parts if part)
+
+
+def _parent_id(chunk_id: str, metadata: Dict[str, Any]) -> str:
+    explicit = metadata.get("parent_id")
+    if explicit:
+        return str(explicit)
+    parts = (chunk_id or "").split("_")
+    if len(parts) >= 2 and parts[0] and parts[1].isdigit():
+        return f"{parts[0]}_{parts[1]}"
+    return f"{metadata.get('document_id', '')}_{metadata.get('chunk_index', 0)}"
+
+
+def process_document(file_bytes: bytes, filename: str, file_type: str, chunking: str = "Parent-child") -> DocumentInfo:
+    active = require_compatible()
+    document_id = str(uuid.uuid4())
+    suffix = os.path.splitext(filename)[1] or ".bin"
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+            handle.write(file_bytes)
+            temp_path = handle.name
+
         if file_type == "application/pdf" or filename.lower().endswith(".pdf"):
-            loader = PyMuPDFLoader(temp_path)
-            raw_docs = loader.load()
+            raw_docs = PyMuPDFLoader(temp_path).load()
             ftype = "pdf"
             num_pages = len(raw_docs)
             if num_pages == 0:
                 raise ValueError("No text could be extracted.")
-            # Process page by page to keep exact page numbers
-            for d in raw_docs:
-                page_text = d.page_content.strip()
+            md_splits = []
+            for doc in raw_docs:
+                page_text = doc.page_content.strip()
                 if not page_text:
                     continue
-                page_splits = md_splitter.split_text(page_text)
-                for split in page_splits:
-                    # PyMuPDF uses 0-indexed page in metadata
-                    split.metadata["page"] = d.metadata.get("page", 0) + 1
+                for split in md_splitter.split_text(page_text):
+                    split.metadata["page"] = doc.metadata.get("page", 0) + 1
                     md_splits.append(split)
         else:
-            # MarkItDown for DOCX, PPTX, XLSX, Images, etc.
-            md = MarkItDown()
-            result = md.convert(temp_path)
-            full_text = result.text_content
+            converted = MarkItDown().convert(temp_path)
+            full_text = converted.text_content or ""
             if not full_text.strip():
                 raise ValueError("No text could be extracted.")
             ftype = "multimodal"
@@ -132,294 +207,620 @@ def process_document(
             md_splits = md_splitter.split_text(full_text)
             for split in md_splits:
                 split.metadata["page"] = 1
-        
-        # 3. Parent-Child Chunking
+
         parent_splitter = RecursiveCharacterTextSplitter(
             chunk_size=PARENT_CHUNK_SIZE,
             chunk_overlap=PARENT_CHUNK_OVERLAP,
-            separators=["\n\n", "\n", ".", " ", ""]
+            separators=["\n\n", "\n", ".", " ", ""],
         )
         child_splitter = RecursiveCharacterTextSplitter(
             chunk_size=CHILD_CHUNK_SIZE,
             chunk_overlap=CHILD_CHUNK_OVERLAP,
-            separators=["\n\n", "\n", ".", " ", ""]
+            separators=["\n\n", "\n", ".", " ", ""],
         )
-        
         parent_chunks = parent_splitter.split_documents(md_splits)
         if not parent_chunks:
             raise ValueError("No meaningful text chunks could be created.")
-            
-        ids = []
-        texts = []
-        metadatas = []
-        
-        # Prepare FTS inserts
-        fts_data = []
-        
-        total_children = 0
-        for p_idx, parent in enumerate(parent_chunks):
-            # Extract header context
-            h1 = parent.metadata.get("Header 1", "")
-            h2 = parent.metadata.get("Header 2", "")
-            h3 = parent.metadata.get("Header 3", "")
-            header_context = " > ".join(filter(None, [h1, h2, h3]))
-            
-            children = child_splitter.split_text(parent.page_content)
-            
-            for c_idx, child_text in enumerate(children):
-                child_id = f"{document_id}_{p_idx}_{c_idx}"
-                ids.append(child_id)
-                texts.append(child_text) # Embed the highly specific child
-                
-                page_num = parent.metadata.get("page", 1)
-                
-                meta = {
-                    "document_id": document_id,
-                    "document_name": filename,
-                    "page_number": page_num,
-                    "chunk_index": p_idx,
-                    "parent_text": parent.page_content, # Store the massive context
-                    "header_context": header_context # Scaffolding metadata
+
+        ids: List[str] = []
+        texts: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        parent_rows: List[Dict[str, Any]] = []
+        fts_rows: List[tuple] = []
+
+        for parent_index, parent in enumerate(parent_chunks):
+            header = _header_context(parent.metadata)
+            page_number = int(parent.metadata.get("page", 1) or 1)
+            parent_key = f"{document_id}_{parent_index}"
+            summary = index_card(header, parent.page_content)
+            parent_rows.append(
+                {
+                    "parent_id": parent_key,
+                    "page_number": page_number,
+                    "chunk_index": parent_index,
+                    "header_context": header,
+                    "parent_text": parent.page_content,
+                    "summary": summary,
                 }
-                metadatas.append(meta)
-                
-                # Add to FTS data
-                fts_data.append((document_id, child_id, filename, page_num, header_context, parent.page_content))
-                total_children += 1
-                
-        # Insert into ChromaDB (Vector Search)
-        for i in range(0, len(ids), 500):
-            collection.add(
-                ids=ids[i:i+500],
-                documents=texts[i:i+500],
-                metadatas=metadatas[i:i+500]
             )
-            
-        # Insert into SQLite FTS5 (Keyword Search)
-        cursor = conn.cursor()
-        cursor.executemany(
-            "INSERT INTO documents_fts (document_id, chunk_id, document_name, page_number, header_context, parent_text) VALUES (?, ?, ?, ?, ?, ?)",
-            fts_data
-        )
-        conn.commit()
-            
+            children = child_splitter.split_text(parent.page_content)
+            if chunking == "Index card summary":
+                card = summary or parent.page_content[:CHILD_CHUNK_SIZE]
+                units = [("index_card", 0, card)]
+            elif chunking == "Fixed window":
+                units = [("child", child_index, child_text) for child_index, child_text in enumerate(children)]
+            else:
+                units = [("child", child_index, child_text) for child_index, child_text in enumerate(children)]
+                if summary and all(summary != child_text for _, _, child_text in units):
+                    units.append(("index_card", len(children), summary))
+
+            for unit_type, child_index, passage in units:
+                chunk_id = (
+                    f"{document_id}_{parent_index}_card"
+                    if unit_type == "index_card"
+                    else f"{document_id}_{parent_index}_{child_index}"
+                )
+                ids.append(chunk_id)
+                texts.append(passage)
+                metadatas.append(
+                    {
+                        "document_id": document_id,
+                        "document_name": filename,
+                        "page_number": page_number,
+                        "chunk_index": parent_index,
+                        "header_context": header,
+                        "parent_id": parent_key,
+                        "unit_type": unit_type,
+                        "token_count": len(tokenize(passage)),
+                        "version_id": active["version_id"],
+                    }
+                )
+                fts_rows.append((document_id, chunk_id, filename, page_number, header, passage))
+
+        uploaded_at = datetime.now(timezone.utc).isoformat()
+        with _mutation_lock:
+            current = require_compatible()
+            for metadata in metadatas:
+                metadata["version_id"] = current["version_id"]
+            collection = _collection_for(current["collection_name"])
+            embeddings = _embed(texts)
+            for start in range(0, len(ids), 100):
+                collection.add(
+                    ids=ids[start:start + 100],
+                    documents=texts[start:start + 100],
+                    metadatas=metadatas[start:start + 100],
+                    embeddings=embeddings[start:start + 100],
+                )
+            store.save_document(
+                document_id=document_id,
+                name=filename,
+                num_pages=num_pages,
+                num_chunks=len(ids),
+                file_type=ftype,
+                uploaded_at=uploaded_at,
+                version_id=current["version_id"],
+                parents=parent_rows,
+                fts_rows=fts_rows,
+            )
         return DocumentInfo(
             id=document_id,
             name=filename,
-            num_chunks=total_children,
+            num_chunks=len(ids),
             num_pages=num_pages,
             file_type=ftype,
-            uploaded_at=datetime.now(timezone.utc).isoformat(),
+            uploaded_at=uploaded_at,
         )
     finally:
-        if os.path.exists(temp_path):
+        if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
 
 def get_all_documents() -> List[Dict[str, Any]]:
-    # Instead of fetching heavy metadata from Chroma, we can query SQLite for distinct docs
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT document_id, document_name FROM documents_fts")
-    rows = cursor.fetchall()
-    
-    docs = []
-    for doc_id, name in rows:
-        cursor.execute("SELECT COUNT(*), MAX(page_number) FROM documents_fts WHERE document_id = ?", (doc_id,))
-        count, max_page = cursor.fetchone()
-        docs.append({
-            "id": doc_id,
-            "name": name,
-            "chunk_count": count,
-            "max_page": max_page or 1,
-        })
-    return docs
+    return store.list_documents()
 
 
 def delete_document(document_id: str) -> bool:
-    collection.delete(where={"document_id": document_id})
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM documents_fts WHERE document_id = ?", (document_id,))
-    conn.commit()
-    return True
+    with _mutation_lock:
+        return _delete_document(document_id)
 
 
-# ── Hybrid Search & RRF ──────────────────────────────────────
-def retrieve_chunks(query: str, document_id: Optional[str] = None) -> List[RetrievedChunk]:
-    where_filter = {"document_id": document_id} if document_id else None
-    
-    # 1. VECTOR SEARCH (ChromaDB)
-    vector_results = collection.query(
-        query_texts=[query],
-        n_results=TOP_K_CHILDREN,
-        where=where_filter,
-        include=["documents", "metadatas", "distances"]
+def _delete_document(document_id: str) -> bool:
+    existed = store.document_exists(document_id)
+    for version in store.list_versions():
+        if version["status"] == "failed":
+            continue
+        try:
+            collection = chroma_client.get_collection(version["collection_name"])
+            collection.delete(where={"document_id": document_id})
+        except Exception:
+            log.warning("Could not delete %s from index %s", document_id, version["collection_name"], exc_info=True)
+    if existed:
+        store.mark_deleted(document_id)
+    return existed
+
+
+def refresh_active_index() -> Dict[str, Any]:
+    """Copy the active index into a new collection, re-embed it, then publish."""
+    with _mutation_lock:
+        return _refresh_active_index()
+
+
+def _refresh_active_index() -> Dict[str, Any]:
+    active = store.ensure_active_version(EMBEDDING_MODEL_ID)
+    old = chroma_client.get_collection(active["collection_name"])
+    payload = old.get(include=["documents", "metadatas"])
+    ids = list(payload.get("ids") or [])
+    documents = list(payload.get("documents") or [])
+    metadatas = list(payload.get("metadatas") or [])
+    version_id = str(uuid.uuid4())
+    collection_name = "needle_" + version_id.replace("-", "")[:12]
+    store.begin_version(version_id, EMBEDDING_MODEL_ID, collection_name)
+    created = False
+    try:
+        new_collection = chroma_client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        created = True
+        if ids:
+            embeddings = _embed(documents)
+            for start in range(0, len(ids), 100):
+                new_collection.add(
+                    ids=ids[start:start + 100],
+                    documents=documents[start:start + 100],
+                    metadatas=metadatas[start:start + 100],
+                    embeddings=embeddings[start:start + 100],
+                )
+        if new_collection.count() != len(ids):
+            raise RuntimeError("Versioned index handoff aborted because the copy count did not match.")
+        store.publish_version(version_id)
+    except Exception:
+        store.fail_version(version_id)
+        if created:
+            try:
+                chroma_client.delete_collection(collection_name)
+            except Exception:
+                log.warning("Failed to remove unfinished index %s", collection_name, exc_info=True)
+        raise
+    return index_status()
+
+
+def _search_filter(document_id: Optional[str], exclude_ids: Optional[List[str]]) -> Optional[Dict[str, Any]]:
+    clauses = []
+    if document_id:
+        clauses.append({"document_id": document_id})
+    if exclude_ids:
+        clauses.append({"document_id": {"$nin": list(exclude_ids)}})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+def _vector_candidates(
+    query: str,
+    document_id: Optional[str],
+    *,
+    top_k: int,
+    similarity_threshold: float,
+    exclude_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    collection, _active = _active_collection()
+    count = collection.count()
+    if count == 0 or not tokenize(query):
+        return []
+    embedding = _embed([query])[0]
+    query_kwargs: Dict[str, Any] = {
+        "query_embeddings": [embedding],
+        "n_results": min(max(1, top_k), count),
+        "include": ["documents", "metadatas", "distances"],
+    }
+    where = _search_filter(document_id, exclude_ids)
+    if where:
+        query_kwargs["where"] = where
+    try:
+        result = collection.query(**query_kwargs)
+    except Exception:
+        log.exception("Vector search failed")
+        return []
+    ids = (result.get("ids") or [[]])[0]
+    docs = (result.get("documents") or [[]])[0]
+    metas = (result.get("metadatas") or [[]])[0]
+    distances = (result.get("distances") or [[]])[0]
+    hits = []
+    for chunk_id, passage, metadata, distance in zip(ids, docs, metas, distances):
+        metadata = metadata or {}
+        hits.append(
+            {
+                "chunk_id": chunk_id,
+                "text": passage or "",
+                "parent_id": _parent_id(chunk_id, metadata),
+                "parent_text": metadata.get("parent_text") or "",
+                "document_id": metadata.get("document_id", ""),
+                "document_name": metadata.get("document_name", ""),
+                "page_number": int(metadata.get("page_number") or 1),
+                "chunk_index": int(metadata.get("chunk_index") or 0),
+                "header_context": metadata.get("header_context") or "",
+                "similarity": 1.0 - float(distance),
+                "unit_type": metadata.get("unit_type") or "child",
+            }
+        )
+    return filter_by_similarity(
+        hits,
+        absolute_threshold=similarity_threshold,
+        relative_floor=VECTOR_RELATIVE_FLOOR,
     )
-    
-    vector_scores = {}
-    if vector_results["documents"] and len(vector_results["documents"][0]) > 0:
-        docs = vector_results["documents"][0]
-        metas = vector_results["metadatas"][0]
-        dists = vector_results["distances"][0]
-        
-        sims = [1.0 - d for d in dists]
-        if sims:
-            top_sim = max(sims)
-            for rank, (doc, meta, sim) in enumerate(zip(docs, metas, sims)):
-                # DYNAMIC GATE: "Null over Hallucination"
-                # 1. If similarity falls off a cliff (< 70% of the top match), it lacks consensus.
-                # 2. If it's objectively terrible (sim < 0.1), discard immediately.
-                if sim < (top_sim * 0.7) or sim < 0.1:
-                    continue
-                    
-                p_id = f"{meta['document_id']}_{meta['chunk_index']}"
-                if p_id not in vector_scores:
-                    vector_scores[p_id] = {
-                        "rank": rank + 1,
-                        "meta": meta
-                    }
-                
-    # 2. KEYWORD SEARCH (SQLite FTS5)
-    # Convert query to FTS Match syntax (OR between alphanumeric words)
-    words = [w for w in re.findall(r'\w+', query.lower()) if len(w) > 2]
-    fts_query = " OR ".join(words)
-    
-    keyword_scores = {}
-    if fts_query:
-        cursor = conn.cursor()
-        sql = """
-            SELECT document_id, chunk_id, document_name, page_number, header_context, parent_text, bm25(documents_fts) as score
-            FROM documents_fts 
-            WHERE documents_fts MATCH ? 
-        """
-        params = [fts_query]
-        if document_id:
-            sql += " AND document_id = ?"
-            params.append(document_id)
-        sql += " ORDER BY score ASC LIMIT ?"
-        params.append(TOP_K_CHILDREN)
-        
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-        
-        for rank, row in enumerate(rows):
-            doc_id, chunk_id, doc_name, page, header_ctx, p_text, bm25_score = row
-            # Extract p_idx from chunk_id (format: docid_pidx_cidx)
-            p_idx = chunk_id.split('_')[-2]
-            p_id = f"{doc_id}_{p_idx}"
-            
-            if p_id not in keyword_scores:
-                keyword_scores[p_id] = {
-                    "rank": rank + 1,
-                    "meta": {
-                        "document_id": doc_id,
-                        "document_name": doc_name,
-                        "page_number": page,
-                        "chunk_index": p_idx,
-                        "parent_text": p_text,
-                        "header_context": header_ctx
-                    }
-                }
-                
-    # 3. RECIPROCAL RANK FUSION (RRF)
-    # RRF Score = 1 / (k + rank)
-    k = 60
-    final_scores = {}
-    combined_meta = {}
-    
-    all_p_ids = set(vector_scores.keys()).union(set(keyword_scores.keys()))
-    
-    for p_id in all_p_ids:
-        score = 0.0
-        if p_id in vector_scores:
-            score += 1.0 / (k + vector_scores[p_id]["rank"])
-            combined_meta[p_id] = vector_scores[p_id]["meta"]
-        if p_id in keyword_scores:
-            score += 1.0 / (k + keyword_scores[p_id]["rank"])
-            combined_meta[p_id] = keyword_scores[p_id]["meta"]
-            
-        final_scores[p_id] = score
-        
-    # Sort by RRF score descending
-    sorted_p_ids = sorted(final_scores.keys(), key=lambda x: final_scores[x], reverse=True)
-    
-    retrieved = []
-    # Return top 5 most relevant fused parent contexts
-    for p_id in sorted_p_ids[:5]:
-        meta = combined_meta[p_id]
-        retrieved.append(RetrievedChunk(
-            text=meta.get("parent_text", ""),
-            page_number=meta.get("page_number", 0),
-            chunk_index=int(meta.get("chunk_index", 0)),
-            document_id=meta.get("document_id", ""),
-            document_name=meta.get("document_name", ""),
-            header_context=meta.get("header_context", ""),
-            similarity_score=final_scores[p_id]
-        ))
-        
-    return retrieved
 
 
-# ── Generation ───────────────────────────────────────────────
-SYSTEM_PROMPT = textwrap.dedent("""\
-You are an intelligent document assistant. Your job is to answer questions
-based ONLY on the provided context from uploaded documents.
+def _keyword_candidates(
+    query: str,
+    document_id: Optional[str],
+    seen: set,
+    *,
+    top_k: int,
+    exclude_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    words = [token for token in tokenize(query) if len(token) > 2]
+    if not words:
+        return []
+    blocked = set(exclude_ids or [])
+    rows = store.keyword_search(" OR ".join(words), top_k, document_id)
+    extra = []
+    for row in rows:
+        chunk_id = row["chunk_id"]
+        if chunk_id in seen or row["document_id"] in blocked:
+            continue
+        metadata = {
+            "document_id": row["document_id"],
+            "chunk_index": 0,
+            "parent_id": "",
+        }
+        extra.append(
+            {
+                "chunk_id": chunk_id,
+                "text": row["parent_text"] or "",
+                "parent_id": _parent_id(chunk_id, metadata),
+                "parent_text": row["parent_text"] or "",
+                "document_id": row["document_id"],
+                "document_name": row["document_name"],
+                "page_number": int(row["page_number"] or 1),
+                "chunk_index": int(_parent_id(chunk_id, metadata).rsplit("_", 1)[-1] or 0),
+                "header_context": row["header_context"] or "",
+                "similarity": None,
+                "unit_type": "keyword",
+            }
+        )
+        seen.add(chunk_id)
+    return extra
 
-Rules:
-1. Answer based on the provided context. If the context doesn't contain
-   enough information, say so clearly.
-2. The context includes document hierarchy/chapters (e.g., [Section: Introduction > Safety]). 
-   Use this to organize your answer if helpful.
-3. Be precise, helpful, and well-structured in your answers.
-4. Use markdown formatting for readability (headers, lists, bold, etc.).
-5. If multiple sources are relevant, synthesize them into a coherent answer.
-6. Never make up information not present in the context.
-""")
 
-def build_context_prompt(chunks: List[RetrievedChunk], query: str, available_docs: List[Dict[str, Any]]) -> str:
-    # Build list of all documents in the database
-    doc_list_str = "\n".join([f"- {d['name']} ({d['max_page']} pages)" for d in available_docs])
-    
-    context_parts = []
-    for i, chunk in enumerate(chunks):
-        header_info = f" [Section: {chunk.header_context}]" if chunk.header_context else ""
-        source_label = f"Source {i+1} ({chunk.document_name}{header_info})"
-        context_parts.append(f"--- {source_label} ---\n{chunk.text}")
-    context_str = "\n\n".join(context_parts)
-    
-    return f"AVAILABLE DOCUMENTS IN DATABASE:\n{doc_list_str}\n\nCONTEXT FROM DOCUMENTS:\n{context_str}\n\nUSER QUESTION:\n{query}\n\nPlease answer the question based on the context above. Cite your sources."
+def _openrouter_key() -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise JevNotConfigured(
+            "Set OPENROUTER_API_KEY in .env. Jev reranking and cited answers both use that key."
+        )
+    return api_key
 
-def generate_answer_stream(query: str, document_id: Optional[str] = None) -> Generator[str, None, None]:
-    chunks = retrieve_chunks(query, document_id=document_id)
-    available_docs = get_all_documents()
-    
-    if not chunks:
-        # If no chunks match, still try to answer if it's a meta-question about documents
-        context_prompt = build_context_prompt([], query, available_docs)
-    else:
-        context_prompt = build_context_prompt(chunks, query, available_docs)
 
-    sources_data = [{
-        "text": c.text,
-        "page_number": c.page_number,
-        "chunk_index": c.chunk_index,
-        "document_name": c.document_name,
-        "header_context": c.header_context,
-        "similarity_score": round(c.similarity_score * 1000, 2), # RRF scores are small, scale for UI
-    } for c in chunks]
-    
-    if sources_data:
-        yield json.dumps({"type": "sources", "data": sources_data})
+def _rerank_with_jev(query: str, passages: List[str]) -> List[Dict[str, Any]]:
+    api_key = _openrouter_key()
+    try:
+        from jev_reranker import JevReranker
+    except ImportError as exc:
+        raise JevUnavailable("The jev-reranker package is not installed.") from exc
+    try:
+        reranker = JevReranker(
+            api_key=api_key,
+            model=JEV_MODEL,
+            endpoint=JEV_ENDPOINT,
+            dotenv_path=None,
+        )
+        response = reranker.relevance_rerank(query, passages, threshold=JEV_RELEVANCE_THRESHOLD)
+    except NeedleError:
+        raise
+    except Exception as exc:
+        log.exception("Jev rerank failed")
+        raise JevUnavailable("Jev could not rerank the retrieved passages.") from exc
+    return list(response.get("results") or [])
 
-    response = client.models.generate_content_stream(
-        model=GENERATION_MODEL,
-        contents=[types.Content(role="user", parts=[types.Part(text=context_prompt)])],
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=0.3,
-            max_output_tokens=2048,
-        ),
+
+def _load_parent(child: Dict[str, Any]) -> Dict[str, Any]:
+    stored = store.fetch_parent(child["parent_id"])
+    if stored:
+        return {
+            "text": stored["parent_text"],
+            "page_number": int(stored["page_number"] or 1),
+            "chunk_index": int(stored["chunk_index"] or 0),
+            "document_id": stored["document_id"],
+            "document_name": stored["document_name"],
+            "header_context": stored["header_context"] or "",
+            "similarity_score": round(float(child["jev_score"]), 4),
+            "vector_similarity": child.get("similarity"),
+            "matched_passage": child["text"],
+            "unit_type": child.get("unit_type") or "child",
+        }
+    parent_text = child.get("parent_text") or child["text"]
+    return {
+        "text": parent_text,
+        "page_number": int(child.get("page_number") or 1),
+        "chunk_index": int(child.get("chunk_index") or 0),
+        "document_id": child.get("document_id", ""),
+        "document_name": child.get("document_name", ""),
+        "header_context": child.get("header_context") or "",
+        "similarity_score": round(float(child["jev_score"]), 4),
+        "vector_similarity": child.get("similarity"),
+        "matched_passage": child["text"],
+        "unit_type": child.get("unit_type") or "child",
+    }
+
+
+def _assemble_prompt(contexts: List[Dict[str, Any]], query: str, answer_length: str, require_citations: bool, citation_style: str) -> str:
+    blocks = []
+    for index, context in enumerate(contexts, start=1):
+        section = f" [Section: {context['header_context']}]" if context["header_context"] else ""
+        blocks.append(
+            f"[{index}] {context['document_name']}{section}, page {context['page_number']}\n{context['text']}"
+        )
+    return (
+        "CONTEXT:\n"
+        + "\n\n".join(blocks)
+        + f"\n\nUSER QUESTION:\n{query}\n\n"
+        + (
+            "Answer from the context above. "
+            + (
+                {
+                    "Footnotes": "Cite sources as footnotes after the answer. ",
+                    "Source cards": "Name the document and page with each claim. ",
+                }.get(citation_style, "Cite the passages you use as [1], [2], and so on. ")
+                if require_citations
+                else ""
+            )
+            + {
+                "Concise": "Keep the answer to a short paragraph.",
+                "Detailed": "Explain the answer in detail, still staying inside the context.",
+            }.get(answer_length, "Use a balanced length.")
+        )
     )
-    for resp_chunk in response or []:
-        if resp_chunk.text:
-            yield json.dumps({"type": "chunk", "content": resp_chunk.text})
-    yield json.dumps({"type": "done"})
+
+
+def _openrouter_chat(messages: List[Dict[str, str]], *, temperature: float, max_tokens: int) -> str:
+    try:
+        response = httpx.post(
+            OPENROUTER_CHAT_URL,
+            headers={
+                "Authorization": f"Bearer {_openrouter_key()}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OPENROUTER_MODEL,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=120,
+        )
+    except httpx.HTTPError as exc:
+        log.exception("OpenRouter chat request failed")
+        raise NeedleError("The answer model on OpenRouter could not be reached.") from exc
+    if response.status_code != 200:
+        log.error("OpenRouter chat failed with HTTP %s", response.status_code)
+        raise NeedleError("The answer model on OpenRouter did not return a draft.")
+    payload = response.json()
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {}
+    return str(message.get("content") or "").strip()
+
+
+def _generate_draft(prompt: str) -> str:
+    return _openrouter_chat(
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+        max_tokens=2048,
+    )
+
+
+def _parse_verdict(raw: str) -> Dict[str, Any]:
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if not match:
+        return {
+            "grounded": False,
+            "safe": False,
+            "relevant": False,
+            "reason": "The answer check did not return a readable verdict.",
+        }
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {
+            "grounded": False,
+            "safe": False,
+            "relevant": False,
+            "reason": "The answer check did not return a readable verdict.",
+        }
+    return {
+        "grounded": bool(parsed.get("grounded")),
+        "safe": bool(parsed.get("safe")),
+        "relevant": bool(parsed.get("relevant")),
+        "reason": str(parsed.get("reason") or "").strip(),
+    }
+
+
+def _validate_answer(query: str, contexts: List[Dict[str, Any]], answer: str) -> Dict[str, Any]:
+    if not answer.strip():
+        return {
+            "grounded": False,
+            "safe": True,
+            "relevant": False,
+            "reason": "The model returned an empty answer.",
+        }
+    passage_block = "\n\n".join(
+        f"[{index}] {context['document_name']} page {context['page_number']}\n{context['text']}"
+        for index, context in enumerate(contexts, start=1)
+    )
+    prompt = (
+        "Decide whether the draft answer may be shown to the user. "
+        "Return JSON only, with boolean fields grounded, safe, and relevant, plus a short reason. "
+        "grounded is true only when the factual claims are supported by the passages. "
+        "safe is false when the draft is abusive, dangerous, or deceptive. "
+        "relevant is true only when the draft addresses the question.\n\n"
+        f"QUESTION:\n{query}\n\nPASSAGES:\n{passage_block}\n\nDRAFT:\n{answer}"
+    )
+    raw = _openrouter_chat(
+        [{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=300,
+    )
+    return _parse_verdict(raw)
+
+
+def _event(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload)
+
+
+def _fallback_stream(reason: str, message: str) -> Generator[str, None, None]:
+    yield _event(
+        {
+            "type": "validation",
+            "passed": False,
+            "grounded": False,
+            "safe": True,
+            "relevant": False,
+            "reason": reason,
+        }
+    )
+    yield _event({"type": "chunk", "content": message})
+    yield _event({"type": "done"})
+
+
+def document_passages(document_id: str) -> List[Dict[str, Any]]:
+    """Parent passages stored for one document, used by the document detail view."""
+    collection, _active = _active_collection()
+    try:
+        data = collection.get(where={"document_id": document_id}, include=["documents", "metadatas"])
+    except Exception:
+        log.exception("Could not read passages for %s", document_id)
+        return []
+    grouped: Dict[str, Dict[str, Any]] = {}
+    ids = data.get("ids") or []
+    docs = data.get("documents") or []
+    metas = data.get("metadatas") or []
+    for chunk_id, text, metadata in zip(ids, docs, metas):
+        metadata = metadata or {}
+        parent_key = _parent_id(chunk_id, metadata)
+        slot = grouped.setdefault(
+            parent_key,
+            {
+                "parent_id": parent_key,
+                "page_number": int(metadata.get("page_number") or 1),
+                "header_context": metadata.get("header_context") or "",
+                "text": "",
+            },
+        )
+        stored = store.fetch_parent(parent_key)
+        if stored and stored.get("parent_text"):
+            slot["text"] = stored["parent_text"]
+            slot["page_number"] = int(stored.get("page_number") or slot["page_number"])
+            slot["header_context"] = stored.get("header_context") or slot["header_context"]
+        elif metadata.get("parent_text"):
+            slot["text"] = metadata["parent_text"]
+        elif text and not slot["text"]:
+            slot["text"] = text
+    passages = [item for item in grouped.values() if item["text"]]
+    passages.sort(key=lambda item: (item["page_number"], item["parent_id"]))
+    return passages
+
+
+def generate_answer_stream(
+    query: str,
+    document_id: Optional[str] = None,
+    *,
+    top_k: int = TOP_K_CHILDREN,
+    similarity_threshold: float = VECTOR_SIMILARITY_THRESHOLD,
+    max_parents: int = MAX_PARENTS,
+    exclude_document_ids: Optional[List[str]] = None,
+    answer_length: str = "Balanced",
+    require_citations: bool = True,
+    citation_style: str = "Inline numbered",
+    withhold_ungrounded: bool = True,
+) -> Generator[str, None, None]:
+    try:
+        if not tokenize(query):
+            yield from _fallback_stream("The question had no searchable terms.", NO_EVIDENCE_FALLBACK)
+            return
+
+        yield _event({"type": "status", "stage": "search", "message": "Searching the active index…"})
+        vector_hits = _vector_candidates(
+            query,
+            document_id,
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+            exclude_ids=exclude_document_ids,
+        )
+        seen = {hit["chunk_id"] for hit in vector_hits}
+        candidates = vector_hits + _keyword_candidates(
+            query, document_id, seen, top_k=top_k, exclude_ids=exclude_document_ids
+        )
+        trace = {
+            "type": "trace",
+            "candidates": len(candidates),
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold,
+        }
+        if not candidates:
+            yield _event({**trace, "kept": 0})
+            yield from _fallback_stream(
+                "No passage cleared the similarity threshold.",
+                NO_EVIDENCE_FALLBACK,
+            )
+            return
+
+        yield _event({"type": "status", "stage": "rerank", "message": "Jev is reranking the passages…"})
+        ranked = _rerank_with_jev(query, [candidate["text"] for candidate in candidates])
+        scored = []
+        for item in ranked:
+            index = int(item["document_index"])
+            if index < 0 or index >= len(candidates):
+                continue
+            child = dict(candidates[index])
+            child["jev_score"] = float(item.get("score") or 0)
+            scored.append(child)
+        chosen = select_parents(scored, max_parents)
+        if not chosen:
+            yield _event({**trace, "kept": 0})
+            yield from _fallback_stream(
+                "Jev did not keep any passage as useful evidence.",
+                NO_EVIDENCE_FALLBACK,
+            )
+            return
+
+        yield _event({"type": "status", "stage": "context", "message": "Fetching the parent passages…"})
+        contexts = [_load_parent(child) for child in chosen]
+        yield _event({**trace, "kept": len(contexts)})
+
+        yield _event({"type": "status", "stage": "generate", "message": "Writing a cited answer…"})
+        draft = _generate_draft(_assemble_prompt(contexts, query, answer_length, require_citations, citation_style))
+
+        yield _event({"type": "status", "stage": "validate", "message": "Checking that the answer is grounded…"})
+        verdict = _validate_answer(query, contexts, draft)
+        passed = verdict_passes(verdict)
+        yield _event({"type": "validation", "passed": passed, **verdict})
+        if not passed and withhold_ungrounded:
+            yield _event({"type": "chunk", "content": validation_fallback(verdict.get("reason", ""))})
+            yield _event({"type": "done"})
+            return
+
+        yield _event({"type": "sources", "data": contexts})
+        yield _event({"type": "chunk", "content": draft})
+        yield _event({"type": "done"})
+    except NeedleError as exc:
+        yield _event({"type": "error", "content": str(exc)})
+    except Exception:
+        log.exception("Answer pipeline failed")
+        yield _event({"type": "error", "content": "The answer pipeline failed before a cited answer could be returned."})

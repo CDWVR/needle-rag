@@ -1,0 +1,974 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Relay — a source-grounded knowledge assistant workspace." />
+  <title>Relay — Knowledge Workspace</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
+
+    :root {
+      --paper: #f2f0e8;
+      --paper-2: #e9e7dd;
+      --ink: #151713;
+      --muted: #6d7168;
+      --line: #d5d3c9;
+      --white: #fbfaf5;
+      --acid: #d8ff3e;
+      --acid-soft: #edffc0;
+      --blue: #2546e8;
+      --coral: #ff6846;
+      --shadow: 0 18px 50px rgba(28, 31, 25, .09);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { height: 100%; scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: 'Manrope', sans-serif;
+      font-size: 14px;
+      overflow: hidden;
+    }
+    button, input, textarea { font: inherit; color: inherit; }
+    button { border: 0; cursor: pointer; }
+    button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(37, 70, 232, .3); outline-offset: 2px; }
+    svg { display: block; }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 78px minmax(280px, 330px) minmax(520px, 1fr) 360px;
+      grid-template-rows: 68px minmax(0, 1fr);
+      background:
+        radial-gradient(circle at 42% -10%, rgba(216,255,62,.18), transparent 26%),
+        var(--paper);
+    }
+
+    .topbar {
+      grid-column: 2 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 22px 0 26px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(242,240,232,.82);
+      backdrop-filter: blur(18px);
+      z-index: 10;
+    }
+    .crumbs { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+    .crumbs strong { font-weight: 700; }
+    .slash { color: #a1a399; }
+    .top-actions { display: flex; align-items: center; gap: 10px; }
+    .sync-pill {
+      display: flex; align-items: center; gap: 7px;
+      border: 1px solid var(--line); border-radius: 999px;
+      padding: 8px 12px; background: rgba(251,250,245,.7);
+      font: 500 11px 'DM Mono', monospace; letter-spacing: .02em;
+    }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #72b81e; box-shadow: 0 0 0 4px rgba(114,184,30,.14); }
+    .avatar {
+      width: 34px; height: 34px; border-radius: 50%;
+      display: grid; place-items: center; color: var(--white); background: var(--blue);
+      font: 500 11px 'DM Mono', monospace;
+    }
+
+    .rail {
+      grid-row: 1 / -1;
+      background: var(--ink);
+      color: var(--white);
+      display: flex; flex-direction: column; align-items: center;
+      padding: 18px 0 16px;
+      z-index: 20;
+    }
+    .mark {
+      width: 42px; height: 42px; margin-bottom: 32px;
+      display: grid; place-items: center;
+      border-radius: 13px; color: var(--ink); background: var(--acid);
+      font: 700 20px 'Newsreader', serif; transform: rotate(-3deg);
+    }
+    .rail-nav { display: flex; flex-direction: column; gap: 9px; align-items: center; }
+    .icon-btn {
+      width: 42px; height: 42px; border-radius: 12px;
+      display: grid; place-items: center; color: #92978c; background: transparent;
+      position: relative; transition: .22s ease;
+    }
+    .icon-btn:hover { color: white; background: rgba(255,255,255,.08); }
+    .icon-btn.active { color: var(--ink); background: var(--acid); }
+    .icon-btn svg { width: 19px; height: 19px; stroke-width: 1.8; }
+    .icon-btn[data-tip]:hover::after {
+      content: attr(data-tip); position: absolute; left: 54px; top: 9px;
+      background: var(--ink); color: var(--white); padding: 6px 9px; border-radius: 7px;
+      font-size: 11px; white-space: nowrap; z-index: 30; box-shadow: var(--shadow);
+    }
+    .rail-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+
+    .sidebar {
+      grid-column: 2; grid-row: 2;
+      border-right: 1px solid var(--line);
+      padding: 26px 20px 20px;
+      overflow-y: auto;
+    }
+    .section-eyebrow {
+      font: 500 10px 'DM Mono', monospace; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .sidebar-title-row { display: flex; align-items: flex-start; justify-content: space-between; margin: 8px 0 22px; }
+    h1, h2, h3, p { margin: 0; }
+    .sidebar h1 { font: 500 31px/1.02 'Newsreader', serif; letter-spacing: -.035em; }
+    .new-chat {
+      width: 37px; height: 37px; display: grid; place-items: center;
+      border-radius: 50%; background: var(--ink); color: white; transition: transform .2s;
+    }
+    .new-chat:hover { transform: rotate(90deg); }
+    .new-chat svg { width: 16px; }
+
+    .searchbox {
+      height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 12px;
+      background: var(--white); border: 1px solid var(--line); border-radius: 11px;
+      margin-bottom: 18px;
+    }
+    .searchbox svg { width: 16px; color: var(--muted); }
+    .searchbox input { min-width: 0; flex: 1; border: 0; outline: none; background: transparent; font-size: 12px; }
+    .searchbox kbd { font: 10px 'DM Mono'; color: var(--muted); border: 1px solid var(--line); padding: 3px 5px; border-radius: 5px; }
+
+    .thread-label { display: flex; justify-content: space-between; align-items: center; margin: 24px 2px 8px; }
+    .thread-label span:last-child { color: var(--muted); font-size: 11px; }
+    .thread-list { display: grid; gap: 4px; }
+    .thread {
+      width: 100%; text-align: left; padding: 11px 12px; border-radius: 10px;
+      background: transparent; display: grid; gap: 4px; transition: .16s ease;
+    }
+    .thread:hover { background: rgba(255,255,255,.55); }
+    .thread.active { background: var(--ink); color: var(--white); box-shadow: 0 8px 22px rgba(21,23,19,.12); }
+    .thread strong { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thread small { font: 10px 'DM Mono'; color: var(--muted); }
+    .thread.active small { color: #9da198; }
+
+    .corpus-card {
+      margin-top: 28px; border: 1px solid var(--line); border-radius: 15px;
+      background: rgba(251,250,245,.62); padding: 15px;
+    }
+    .corpus-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+    .corpus-head strong { font-size: 12px; }
+    .corpus-head button { background: transparent; color: var(--muted); padding: 0; }
+    .doc-stat { display: flex; gap: 10px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); }
+    .doc-icon { width: 29px; height: 35px; border-radius: 5px; display: grid; place-items: center; background: var(--paper-2); font: 500 8px 'DM Mono'; }
+    .doc-meta { min-width: 0; flex: 1; display: grid; gap: 2px; }
+    .doc-meta strong { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .doc-meta span { font: 9px 'DM Mono'; color: var(--muted); }
+    .doc-ok { width: 7px; height: 7px; border-radius: 50%; background: #75b924; }
+
+    .main {
+      grid-column: 3; grid-row: 2; min-width: 0;
+      display: flex; flex-direction: column; overflow: hidden;
+      position: relative;
+    }
+    .conversation {
+      flex: 1; overflow-y: auto; padding: 42px clamp(28px, 5vw, 76px) 32px;
+      scrollbar-width: thin; scrollbar-color: #c7c5bb transparent;
+    }
+    .conversation-inner { max-width: 790px; margin: 0 auto; }
+    .answer-kicker { display: flex; align-items: center; gap: 10px; color: var(--muted); margin-bottom: 18px; }
+    .answer-kicker::before { content: ''; width: 28px; height: 1px; background: var(--muted); }
+    .answer-kicker span { font: 500 10px 'DM Mono'; letter-spacing: .12em; text-transform: uppercase; }
+    .query-title {
+      font: 500 clamp(34px, 4.4vw, 57px)/.99 'Newsreader', serif;
+      letter-spacing: -.045em; max-width: 720px; margin-bottom: 34px;
+      animation: rise .5s both;
+    }
+    .meta-line { display: flex; align-items: center; gap: 8px; margin-bottom: 28px; }
+    .meta-chip {
+      font: 500 9px 'DM Mono'; padding: 6px 8px; border-radius: 6px;
+      border: 1px solid var(--line); color: var(--muted); background: rgba(255,255,255,.3);
+    }
+    .meta-chip.good { color: #2d5d00; background: var(--acid-soft); border-color: #b8d769; }
+    .answer {
+      font: 400 18px/1.72 'Newsreader', serif; max-width: 720px;
+      animation: rise .55s .08s both;
+    }
+    .answer p + p { margin-top: 17px; }
+    .citation {
+      position: relative; display: inline-flex; align-items: center; justify-content: center;
+      width: 21px; height: 19px; margin-left: 3px; top: -2px;
+      border-radius: 5px; color: var(--blue); background: rgba(37,70,232,.09);
+      font: 600 9px 'DM Mono'; cursor: pointer; transition: .18s ease;
+    }
+    .citation:hover, .citation.active { background: var(--blue); color: white; transform: translateY(-1px); }
+
+    .callout {
+      margin: 28px 0; border-left: 4px solid var(--acid); background: var(--ink); color: var(--white);
+      border-radius: 0 14px 14px 0; padding: 20px 22px; display: grid; grid-template-columns: auto 1fr; gap: 13px;
+      box-shadow: var(--shadow); animation: rise .55s .13s both;
+    }
+    .callout svg { width: 18px; color: var(--acid); margin-top: 3px; }
+    .callout strong { font: 500 12px 'DM Mono'; color: var(--acid); text-transform: uppercase; letter-spacing: .06em; }
+    .callout p { margin-top: 7px; color: #c9cdc2; font-size: 13px; line-height: 1.55; }
+
+    .answer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 32px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .action-group { display: flex; gap: 4px; }
+    .mini-action { width: 34px; height: 34px; display: grid; place-items: center; background: transparent; border-radius: 8px; color: var(--muted); }
+    .mini-action:hover { background: var(--white); color: var(--ink); }
+    .mini-action svg { width: 16px; }
+    .verified { display: flex; align-items: center; gap: 6px; color: #4c6f22; font: 500 9px 'DM Mono'; text-transform: uppercase; letter-spacing: .05em; }
+    .verified svg { width: 15px; }
+
+    .composer-wrap {
+      padding: 12px clamp(24px,4vw,62px) 22px;
+      background: linear-gradient(transparent, var(--paper) 18%);
+    }
+    .composer {
+      max-width: 810px; margin: auto; min-height: 94px;
+      padding: 14px 14px 10px 18px; border-radius: 18px;
+      background: var(--white); border: 1px solid #cbc9be; box-shadow: 0 12px 34px rgba(29,32,24,.1);
+      transition: .2s ease;
+    }
+    .composer:focus-within { border-color: #92958a; box-shadow: 0 15px 42px rgba(29,32,24,.13); transform: translateY(-1px); }
+    textarea { width: 100%; min-height: 38px; max-height: 100px; resize: none; border: 0; outline: 0; background: transparent; line-height: 1.55; }
+    textarea::placeholder { color: #8d9087; }
+    .composer-bottom { display: flex; justify-content: space-between; align-items: center; }
+    .composer-tools { display: flex; align-items: center; gap: 4px; }
+    .tool-button { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 8px; background: transparent; color: var(--muted); font-size: 10px; }
+    .tool-button:hover { background: var(--paper); color: var(--ink); }
+    .tool-button svg { width: 14px; }
+    .send {
+      width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px;
+      background: var(--acid); color: var(--ink); transition: .2s ease;
+    }
+    .send:hover { transform: translateY(-2px) rotate(-3deg); box-shadow: 0 7px 16px rgba(125,153,18,.23); }
+    .send svg { width: 17px; }
+    .legal { text-align: center; margin-top: 8px; color: var(--muted); font: 9px 'DM Mono'; }
+
+    .inspector {
+      grid-column: 4; grid-row: 2; background: var(--white); border-left: 1px solid var(--line);
+      padding: 24px 20px; overflow-y: auto;
+    }
+    .inspector-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
+    .inspector-head h2 { font: 500 24px 'Newsreader'; margin-top: 6px; letter-spacing: -.02em; }
+    .close-inspector { display: none; background: transparent; color: var(--muted); padding: 6px; border-radius: 7px; }
+    .close-inspector:hover { background: var(--paper); }
+    .close-inspector svg { width: 17px; }
+
+    .trace {
+      background: var(--ink); border-radius: 16px; padding: 16px 15px 13px; color: white;
+      margin-bottom: 22px; position: relative; overflow: hidden;
+    }
+    .trace::after { content: ''; position: absolute; width: 130px; height: 130px; border-radius: 50%; background: rgba(216,255,62,.08); right: -60px; top: -65px; }
+    .trace-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; }
+    .trace-head span { font: 500 9px 'DM Mono'; color: #aeb2a8; text-transform: uppercase; letter-spacing: .09em; }
+    .trace-time { color: var(--acid)!important; }
+    .trace-flow { display: flex; align-items: center; gap: 5px; }
+    .trace-node { flex: 1; display: grid; justify-items: center; gap: 6px; color: #91958c; }
+    .trace-node .node-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px rgba(255,255,255,.05); }
+    .trace-node.done { color: var(--acid); }
+    .trace-node span { font: 8px 'DM Mono'; }
+    .trace-line { flex: 1; height: 1px; margin-bottom: 17px; background: #4b4e48; }
+    .trace-line.done { background: var(--acid); }
+    .trace-stats { display: flex; justify-content: space-between; border-top: 1px solid #3c3f39; margin-top: 15px; padding-top: 11px; }
+    .trace-stats div { display: grid; gap: 2px; }
+    .trace-stats strong { font: 500 12px 'DM Mono'; }
+    .trace-stats span { color: #8e9289; font-size: 9px; }
+
+    .source-title { display: flex; justify-content: space-between; align-items: center; margin: 0 2px 10px; }
+    .source-title strong { font-size: 12px; }
+    .source-title span { font: 9px 'DM Mono'; color: var(--muted); }
+    .source-list { display: grid; gap: 9px; }
+    .source {
+      text-align: left; border: 1px solid var(--line); border-radius: 13px; padding: 13px;
+      background: var(--white); transition: .18s ease; position: relative;
+    }
+    .source:hover, .source.active { transform: translateX(-3px); border-color: #8e9187; box-shadow: 5px 7px 0 var(--paper-2); }
+    .source-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+    .source-type { display: flex; align-items: center; gap: 7px; font: 500 9px 'DM Mono'; color: var(--muted); text-transform: uppercase; }
+    .file-badge { width: 23px; height: 27px; display: grid; place-items: center; background: var(--paper-2); border-radius: 4px; color: var(--ink); font-size: 7px; }
+    .score { font: 500 9px 'DM Mono'; padding: 4px 6px; background: var(--acid-soft); border-radius: 5px; color: #345b00; }
+    .source h3 { font-size: 12px; line-height: 1.35; margin-bottom: 6px; }
+    .source p { color: var(--muted); font-size: 10px; line-height: 1.55; }
+    mark { background: var(--acid-soft); color: inherit; padding: 0 2px; }
+    .source-foot { margin-top: 10px; display: flex; justify-content: space-between; font: 8px 'DM Mono'; color: #91948b; }
+
+    .index-foot { margin-top: 20px; padding: 14px; background: var(--paper); border-radius: 12px; }
+    .index-line { display: flex; justify-content: space-between; align-items: center; }
+    .index-line strong { font-size: 10px; }
+    .index-line span { font: 9px 'DM Mono'; color: var(--muted); }
+    .progress { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 9px; }
+    .progress i { display: block; width: 100%; height: 100%; background: var(--acid); }
+
+    .toast {
+      position: fixed; left: 50%; bottom: 26px; z-index: 100; transform: translate(-50%, 22px);
+      padding: 11px 15px; background: var(--ink); color: white; border-radius: 9px;
+      font: 500 10px 'DM Mono'; opacity: 0; pointer-events: none; transition: .25s ease;
+    }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .mobile-source-toggle { display: none; }
+
+    /* Workspace pages */
+    .workspace-page {
+      grid-column: 2 / -1; grid-row: 2; overflow-y: auto; display: none;
+      padding: 38px clamp(28px, 4vw, 62px) 70px;
+    }
+    .workspace-page.active { display: block; animation: rise .35s both; }
+    .app.subpage > .sidebar, .app.subpage > .main, .app.subpage > .inspector { display: none; }
+    .app.subpage .mobile-source-toggle { display: none; }
+    .page-content { max-width: 1320px; margin: 0 auto; }
+    .page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 34px; }
+    .page-header h1 { font: 500 clamp(40px, 5vw, 66px)/.95 'Newsreader', serif; letter-spacing: -.045em; margin: 7px 0 9px; }
+    .page-header p { color: var(--muted); max-width: 570px; line-height: 1.6; }
+    .page-actions { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+    .btn {
+      min-height: 40px; border-radius: 10px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      background: var(--white); border: 1px solid var(--line); font-size: 11px; font-weight: 600; transition: .18s ease;
+    }
+    .btn:hover { transform: translateY(-1px); border-color: #989b91; }
+    .btn svg { width: 15px; }
+    .btn.primary { color: var(--ink); background: var(--acid); border-color: #bcd729; box-shadow: 0 6px 16px rgba(122,148,19,.15); }
+    .btn.dark { color: white; background: var(--ink); border-color: var(--ink); }
+    .btn.danger { color: #a83220; border-color: #e2b1a8; background: #fff6f3; }
+    .btn.small { min-height: 32px; padding: 0 10px; font-size: 10px; }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+    .stat-card { min-height: 134px; border: 1px solid var(--line); background: rgba(251,250,245,.68); border-radius: 15px; padding: 17px; position: relative; overflow: hidden; }
+    .stat-card.accent { background: var(--acid); border-color: #c2dd38; }
+    .stat-card.dark { color: white; background: var(--ink); border-color: var(--ink); }
+    .stat-card > span { color: var(--muted); font: 500 9px 'DM Mono'; letter-spacing: .08em; text-transform: uppercase; }
+    .stat-card.dark > span { color: #91958b; }
+    .stat-value { font: 500 34px/1 'Newsreader'; letter-spacing: -.03em; margin: 20px 0 5px; }
+    .stat-card small { font-size: 10px; color: var(--muted); }
+    .stat-card.dark small { color: #a6aa9f; }
+    .stat-delta { color: #43780a!important; }
+
+    .panel { background: rgba(251,250,245,.75); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+    .panel-head { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 18px; border-bottom: 1px solid var(--line); }
+    .panel-head h2 { font: 500 18px 'Newsreader'; }
+    .panel-head p { color: var(--muted); font-size: 10px; margin-top: 3px; }
+    .panel-tools { display: flex; align-items: center; gap: 8px; }
+    .filter-field { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border: 1px solid var(--line); background: var(--white); border-radius: 9px; }
+    .filter-field svg { width: 14px; color: var(--muted); }
+    .filter-field input { width: 150px; border: 0; outline: 0; background: transparent; font-size: 10px; }
+    .segmented { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-2); }
+    .segmented button { background: transparent; padding: 6px 9px; border-radius: 6px; color: var(--muted); font-size: 9px; }
+    .segmented button.active { background: var(--white); color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+
+    .data-table { width: 100%; border-collapse: collapse; }
+    .data-table th { text-align: left; padding: 11px 16px; color: var(--muted); background: rgba(233,231,221,.55); font: 500 8px 'DM Mono'; letter-spacing: .08em; text-transform: uppercase; }
+    .data-table td { padding: 14px 16px; border-top: 1px solid var(--line); font-size: 11px; vertical-align: middle; }
+    .data-table tr { transition: .15s ease; }
+    .data-table tbody tr:hover { background: rgba(255,255,255,.58); }
+    .file-cell { display: flex; align-items: center; gap: 11px; }
+    .file-cell .doc-icon { flex: 0 0 auto; }
+    .file-cell strong { display: block; margin-bottom: 3px; font-size: 11px; }
+    .file-cell span { color: var(--muted); font-size: 9px; }
+    .status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 6px; background: var(--acid-soft); color: #3b650b; font: 500 8px 'DM Mono'; text-transform: uppercase; }
+    .status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .status.sync { color: #7b5413; background: #fff2c2; }
+    .row-action { background: transparent; color: var(--muted); padding: 6px; border-radius: 6px; }
+    .row-action:hover { background: var(--paper-2); color: var(--ink); }
+    .row-action svg { width: 15px; }
+
+    .two-column { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .8fr); gap: 14px; }
+    .stack { display: grid; gap: 14px; }
+    .subtle-note { padding: 14px; background: var(--paper); color: var(--muted); border-radius: 10px; font-size: 10px; line-height: 1.5; }
+
+    .pipeline-map { padding: 25px; min-height: 430px; background: var(--ink); color: white; position: relative; overflow: hidden; }
+    .pipeline-map::before { content: ''; position: absolute; inset: 0; opacity: .13; background-image: radial-gradient(#b9beaf 1px, transparent 1px); background-size: 18px 18px; }
+    .pipeline-row { display: grid; grid-template-columns: 145px 30px 145px 30px 145px 30px 145px; align-items: center; justify-content: center; position: relative; z-index: 1; }
+    .pipeline-row + .pipeline-row { margin-top: 45px; }
+    .pipe-node { min-height: 88px; padding: 13px; border: 1px solid #444840; background: #20231e; border-radius: 12px; display: grid; align-content: space-between; transition: .2s ease; }
+    .pipe-node:hover { transform: translateY(-3px); border-color: var(--acid); }
+    .pipe-node.on { border-color: rgba(216,255,62,.5); background: #252a1d; box-shadow: inset 0 0 0 1px rgba(216,255,62,.08); }
+    .pipe-node .node-label { color: #8f9489; font: 500 8px 'DM Mono'; text-transform: uppercase; }
+    .pipe-node strong { font-size: 11px; line-height: 1.35; }
+    .pipe-node small { color: var(--acid); font: 8px 'DM Mono'; }
+    .pipe-arrow { color: #686d63; display: grid; place-items: center; }
+    .pipe-arrow svg { width: 18px; }
+    .branch-label { grid-column: 1/-1; text-align: center; margin-bottom: 12px; font: 8px 'DM Mono'; color: #7e8379; letter-spacing: .08em; text-transform: uppercase; }
+    .pipeline-legend { position: relative; z-index: 1; margin-top: 26px; padding-top: 15px; border-top: 1px solid #383b35; display: flex; gap: 18px; color: #8f9489; font: 8px 'DM Mono'; }
+    .pipeline-legend i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--acid); margin-right: 5px; }
+
+    .run-list { padding: 6px 16px 12px; }
+    .run { display: grid; grid-template-columns: 72px 1fr auto; gap: 12px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--line); }
+    .run:last-child { border: 0; }
+    .run-time { font: 9px 'DM Mono'; color: var(--muted); }
+    .run strong { display: block; font-size: 10px; margin-bottom: 2px; }
+    .run p { font-size: 9px; color: var(--muted); }
+
+    .chart { height: 270px; padding: 24px 18px 18px; display: flex; align-items: end; gap: 8px; position: relative; }
+    .chart::before, .chart::after { content: ''; position: absolute; left: 18px; right: 18px; border-top: 1px dashed var(--line); }
+    .chart::before { top: 35%; } .chart::after { top: 65%; }
+    .bar-group { flex: 1; height: 100%; display: flex; align-items: end; gap: 3px; position: relative; z-index: 1; }
+    .bar { flex: 1; min-width: 5px; border-radius: 4px 4px 1px 1px; background: var(--ink); transition: .2s ease; }
+    .bar.secondary { background: #c7cabf; }
+    .bar-group:hover .bar { background: var(--blue); }
+    .chart-labels { display: flex; justify-content: space-between; padding: 0 18px 14px; font: 8px 'DM Mono'; color: var(--muted); }
+    .metric-list { padding: 10px 17px 16px; }
+    .metric-row { display: grid; grid-template-columns: 1fr 65px; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .metric-row:last-child { border: 0; }
+    .metric-row strong { font-size: 10px; }
+    .metric-row p { color: var(--muted); font-size: 9px; margin-top: 3px; }
+    .metric-score { font: 500 18px 'Newsreader'; text-align: right; }
+
+    .settings-layout { display: grid; grid-template-columns: 210px minmax(0, 760px); gap: 28px; }
+    .settings-nav { display: grid; align-content: start; gap: 4px; }
+    .settings-nav button { text-align: left; background: transparent; padding: 10px 12px; border-radius: 9px; color: var(--muted); font-size: 11px; }
+    .settings-nav button.active { color: var(--ink); background: var(--white); box-shadow: inset 3px 0 var(--acid); }
+    .settings-section { display: none; }
+    .settings-section.active { display: block; animation: rise .25s both; }
+    .form-block { padding: 20px; border-bottom: 1px solid var(--line); }
+    .form-block:last-child { border: 0; }
+    .form-block h3 { font-size: 12px; margin-bottom: 4px; }
+    .form-block > p { color: var(--muted); font-size: 10px; line-height: 1.5; margin-bottom: 16px; }
+    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .field label { display: block; margin-bottom: 6px; color: var(--muted); font: 500 8px 'DM Mono'; text-transform: uppercase; letter-spacing: .07em; }
+    .field input, .field select { width: 100%; height: 40px; border: 1px solid var(--line); background: var(--white); border-radius: 9px; padding: 0 11px; font-size: 10px; outline: 0; }
+    .field input:focus, .field select:focus { border-color: var(--blue); }
+    .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 0; border-top: 1px solid var(--line); }
+    .switch-row strong { font-size: 10px; }
+    .switch-row p { color: var(--muted); font-size: 9px; margin-top: 3px; }
+    .switch { width: 38px; height: 22px; border-radius: 99px; background: #c4c7bd; padding: 3px; transition: .2s; }
+    .switch::after { content: ''; display: block; width: 16px; height: 16px; border-radius: 50%; background: white; transition: .2s; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+    .switch.on { background: var(--ink); }
+    .switch.on::after { transform: translateX(16px); background: var(--acid); }
+
+    .doc-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; }
+    .document-preview { min-height: 600px; padding: 45px clamp(25px,5vw,70px); background: white; }
+    .document-preview h2 { font: 500 30px 'Newsreader'; margin: 12px 0 24px; }
+    .document-preview h3 { font: 600 12px 'Manrope'; margin: 25px 0 8px; }
+    .document-preview p, .document-preview li { color: #4f534b; font: 400 14px/1.7 'Newsreader'; }
+    .document-preview li + li { margin-top: 7px; }
+    .document-preview mark { background: var(--acid-soft); border-bottom: 1px solid #a9c730; }
+    .chunk-list { padding: 14px; display: grid; gap: 8px; }
+    .chunk { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--white); }
+    .chunk.active { border-color: #a8c62d; box-shadow: inset 3px 0 var(--acid); }
+    .chunk span { font: 8px 'DM Mono'; color: var(--muted); }
+    .chunk p { margin-top: 5px; font-size: 9px; line-height: 1.5; }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    @media (max-width: 1180px) {
+      .app { grid-template-columns: 70px 280px minmax(480px, 1fr); }
+      .inspector { position: fixed; right: 0; top: 68px; bottom: 0; width: 360px; z-index: 40; box-shadow: -20px 0 60px rgba(22,25,19,.14); transform: translateX(101%); transition: transform .28s ease; }
+      .inspector.open { transform: translateX(0); }
+      .close-inspector { display: block; }
+      .mobile-source-toggle { display: flex; align-items: center; gap: 6px; background: var(--white); border: 1px solid var(--line); padding: 8px 10px; border-radius: 9px; font-size: 10px; }
+      .mobile-source-toggle svg { width: 14px; }
+      .stat-grid { grid-template-columns: repeat(2, 1fr); }
+      .pipeline-map { overflow-x: auto; }
+      .pipeline-row { min-width: 1000px; justify-content: start; }
+    }
+    @media (max-width: 820px) {
+      body { overflow: auto; }
+      .app { min-height: 100vh; height: auto; grid-template-columns: 58px 1fr; grid-template-rows: 62px minmax(calc(100vh - 62px), auto); }
+      .rail { grid-row: 1/-1; padding-top: 12px; position: sticky; top: 0; height: 100vh; }
+      .mark { width: 36px; height: 36px; margin-bottom: 24px; }
+      .icon-btn { width: 38px; height: 38px; }
+      .topbar { grid-column: 2; padding: 0 14px; }
+      .crumbs span:nth-child(-n+2), .sync-pill { display: none; }
+      .sidebar { display: none; }
+      .main { grid-column: 2; grid-row: 2; min-height: calc(100vh - 62px); overflow: visible; }
+      .conversation { overflow: visible; padding: 34px 22px 170px; }
+      .query-title { font-size: 38px; }
+      .answer { font-size: 17px; }
+      .composer-wrap { position: fixed; left: 58px; right: 0; bottom: 0; z-index: 25; padding: 22px 14px 12px; }
+      .inspector { top: 62px; width: min(360px, calc(100vw - 58px)); }
+      .tool-button span { display: none; }
+      .workspace-page { grid-column: 2; padding: 28px 18px 60px; }
+      .page-header { align-items: flex-start; flex-direction: column; }
+      .page-header h1 { font-size: 43px; }
+      .page-actions { width: 100%; flex-wrap: wrap; }
+      .stat-grid, .two-column, .doc-layout, .settings-layout { grid-template-columns: 1fr; }
+      .settings-nav { grid-template-columns: repeat(3, 1fr); overflow-x: auto; }
+      .settings-nav button { white-space: nowrap; }
+      .field-grid { grid-template-columns: 1fr; }
+      .panel { overflow-x: auto; }
+      .data-table { min-width: 720px; }
+      .panel-head { min-width: 620px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none!important; transition: none!important; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <nav class="rail" aria-label="Primary navigation">
+      <div class="mark" aria-label="Relay home">R</div>
+      <div class="rail-nav">
+        <button class="icon-btn active" aria-label="Ask" data-tip="Ask" data-page="ask">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8M8 13h5"/></svg>
+        </button>
+        <button class="icon-btn" aria-label="Knowledge base" data-tip="Knowledge base" data-page="knowledge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        </button>
+        <button class="icon-btn" aria-label="Index pipeline" data-tip="Index pipeline" data-page="pipeline">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M9 6h4a4 4 0 0 1 4 4v5M15 18h-4a4 4 0 0 1-4-4V9"/></svg>
+        </button>
+        <button class="icon-btn" aria-label="Analytics" data-tip="Analytics" data-page="analytics">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/></svg>
+        </button>
+      </div>
+      <div class="rail-bottom">
+        <button class="icon-btn" aria-label="Settings" data-tip="Settings" data-page="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.94 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.52-1H3v-4h.08A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15.06 4.6a1.7 1.7 0 0 0 1.88-.34L17 4.2 19.83 7l-.06.06A1.7 1.7 0 0 0 19.4 9c.22.62.81 1.03 1.47 1.03H21v4h-.08A1.7 1.7 0 0 0 19.4 15z"/></svg>
+        </button>
+      </div>
+    </nav>
+
+    <header class="topbar">
+      <div class="crumbs"><span>Northstar Labs</span><span class="slash">/</span><strong id="currentCrumb">Product intelligence</strong></div>
+      <div class="top-actions">
+        <button class="mobile-source-toggle" id="sourceToggle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Sources
+        </button>
+        <div class="sync-pill"><i class="live-dot"></i> INDEX LIVE · V24.9</div>
+        <div class="avatar" aria-label="Profile for Maya Chen">MC</div>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="section-eyebrow">Private workspace</div>
+      <div class="sidebar-title-row">
+        <h1>Ask your<br>knowledge.</h1>
+        <button class="new-chat" aria-label="New conversation">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <label class="searchbox">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+        <input id="threadSearch" type="search" placeholder="Search conversations" aria-label="Search conversations" />
+        <kbd>⌘K</kbd>
+      </label>
+
+      <div class="thread-label"><span class="section-eyebrow">Today</span><span>3 threads</span></div>
+      <div class="thread-list" id="threadList">
+        <button class="thread active"><strong>Enterprise rollout requirements</strong><small>4 MIN AGO · 3 SOURCES</small></button>
+        <button class="thread"><strong>Compare security frameworks</strong><small>10:42 · 6 SOURCES</small></button>
+        <button class="thread"><strong>Q3 launch dependencies</strong><small>09:16 · 4 SOURCES</small></button>
+      </div>
+      <div class="thread-label"><span class="section-eyebrow">Previous</span></div>
+      <div class="thread-list">
+        <button class="thread"><strong>Summarize research interviews</strong><small>FRI · 12 SOURCES</small></button>
+        <button class="thread"><strong>Data retention policy</strong><small>THU · 2 SOURCES</small></button>
+      </div>
+
+      <section class="corpus-card" aria-labelledby="corpus-title">
+        <div class="corpus-head"><strong id="corpus-title">Knowledge base</strong><button aria-label="Open knowledge base">↗</button></div>
+        <div class="doc-stat"><div class="doc-icon">PDF</div><div class="doc-meta"><strong>Enterprise_Requirements.pdf</strong><span>82 CHUNKS · 14m ago</span></div><i class="doc-ok"></i></div>
+        <div class="doc-stat"><div class="doc-icon">DOC</div><div class="doc-meta"><strong>Security_Controls_v4.docx</strong><span>54 CHUNKS · 14m ago</span></div><i class="doc-ok"></i></div>
+        <div class="doc-stat"><div class="doc-icon">MD</div><div class="doc-meta"><strong>Platform_Roadmap.md</strong><span>39 CHUNKS · 1h ago</span></div><i class="doc-ok"></i></div>
+      </section>
+    </aside>
+
+    <section class="workspace-page" id="page-knowledge" data-view="knowledge">
+      <div class="page-content">
+        <header class="page-header">
+          <div><div class="section-eyebrow">Knowledge operations</div><h1>Knowledge base</h1><p>Curate the source material Relay can search, cite, and use to form grounded answers.</p></div>
+          <div class="page-actions">
+            <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M5 13v6h14v-6"/></svg>Connect source</button>
+            <button class="btn primary" id="uploadButton"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg>Upload files</button>
+          </div>
+        </header>
+        <div class="stat-grid">
+          <article class="stat-card accent"><span>Total documents</span><div class="stat-value">184</div><small class="stat-delta">+12 this month</small></article>
+          <article class="stat-card"><span>Indexed chunks</span><div class="stat-value">1,284</div><small>Across 9 collections</small></article>
+          <article class="stat-card"><span>Storage used</span><div class="stat-value">2.4 GB</div><small>of 10 GB workspace limit</small></article>
+          <article class="stat-card dark"><span>Index status</span><div class="stat-value">Healthy</div><small>Last synced 14 minutes ago</small></article>
+        </div>
+        <section class="panel">
+          <div class="panel-head">
+            <div><h2>All documents</h2><p>Sources currently available to your workspace</p></div>
+            <div class="panel-tools">
+              <label class="filter-field"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="documentSearch" placeholder="Search documents" /></label>
+              <div class="segmented"><button class="active">All</button><button>Synced</button><button>Processing</button></div>
+            </div>
+          </div>
+          <table class="data-table" id="documentTable">
+            <thead><tr><th>Document</th><th>Collection</th><th>Chunks</th><th>Updated</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              <tr class="document-row" data-document="requirements"><td><div class="file-cell"><div class="doc-icon">PDF</div><div><strong>Enterprise_Requirements.pdf</strong><span>4.8 MB · 24 pages</span></div></div></td><td>Product</td><td>82</td><td>14 min ago</td><td><span class="status">Indexed</span></td><td><button class="row-action" aria-label="Open document"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg></button></td></tr>
+              <tr><td><div class="file-cell"><div class="doc-icon">DOC</div><div><strong>Security_Controls_v4.docx</strong><span>1.2 MB · 18 pages</span></div></div></td><td>Security</td><td>54</td><td>14 min ago</td><td><span class="status">Indexed</span></td><td><button class="row-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg></button></td></tr>
+              <tr><td><div class="file-cell"><div class="doc-icon">MD</div><div><strong>Platform_Roadmap.md</strong><span>84 KB · 920 lines</span></div></div></td><td>Product</td><td>39</td><td>1 hour ago</td><td><span class="status">Indexed</span></td><td><button class="row-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg></button></td></tr>
+              <tr><td><div class="file-cell"><div class="doc-icon">PDF</div><div><strong>Customer_Research_Q3.pdf</strong><span>9.1 MB · 67 pages</span></div></div></td><td>Research</td><td>146</td><td>Yesterday</td><td><span class="status">Indexed</span></td><td><button class="row-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg></button></td></tr>
+              <tr><td><div class="file-cell"><div class="doc-icon">CSV</div><div><strong>Feature_Requests_2026.csv</strong><span>622 KB · 1,204 rows</span></div></div></td><td>Feedback</td><td>—</td><td>Now</td><td><span class="status sync">Processing</span></td><td><button class="row-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg></button></td></tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </section>
+
+    <section class="workspace-page" id="page-document" data-view="document">
+      <div class="page-content">
+        <header class="page-header">
+          <div><button class="btn small back-knowledge">← Back to knowledge base</button><h1 style="font-size:46px">Enterprise Requirements</h1><p>Enterprise_Requirements.pdf · Product collection · Version 4.2</p></div>
+          <div class="page-actions"><button class="btn">Replace file</button><button class="btn dark">Open original ↗</button></div>
+        </header>
+        <div class="doc-layout">
+          <article class="panel document-preview">
+            <div class="section-eyebrow">Product operations · September 2026</div>
+            <h2>Enterprise launch requirements</h2>
+            <p>This document defines the minimum technical, legal, and operational requirements for enterprise production workspaces.</p>
+            <h3>4.2 Identity and access</h3>
+            <p>Before the first production workspace is created, the account owner must verify <mark>SAML 2.0 single sign-on and automated SCIM provisioning</mark>. Break-glass administrator access must be documented and tested during the pilot.</p>
+            <h3>4.3 Data residency</h3>
+            <p>Accounts serving European Union entities must select the EU storage region before initial data ingestion. Region changes after activation require a supervised migration.</p>
+            <h3>4.4 Rollout sequence</h3>
+            <ol><li>Execute the data processing agreement and complete vendor review.</li><li>Configure SAML, SCIM, and approved administrator groups.</li><li>Run a two-week pilot with at least 25 administrators.</li><li>Approve migration cohorts after pilot acceptance.</li></ol>
+          </article>
+          <aside class="stack">
+            <section class="panel"><div class="panel-head"><div><h2>Index record</h2><p>Current document metadata</p></div></div><div class="form-block"><div class="switch-row"><div><strong>Included in answers</strong><p>Searchable by workspace members</p></div><button class="switch on"></button></div><div class="switch-row"><div><strong>Citation required</strong><p>Expose source reference in answers</p></div><button class="switch on"></button></div></div></section>
+            <section class="panel"><div class="panel-head"><div><h2>Matched chunks</h2><p>82 chunks · parent-child strategy</p></div></div><div class="chunk-list"><div class="chunk active"><span>CHUNK 024 · PAGE 12</span><p>Before the first production workspace is created, the account owner must verify SAML 2.0…</p></div><div class="chunk"><span>CHUNK 027 · PAGE 13</span><p>Accounts serving European Union entities must select the EU storage region…</p></div><div class="chunk"><span>CHUNK 031 · PAGE 15</span><p>Approve migration cohorts after successful pilot acceptance…</p></div></div></section>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="workspace-page" id="page-pipeline" data-view="pipeline">
+      <div class="page-content">
+        <header class="page-header">
+          <div><div class="section-eyebrow">Index architecture</div><h1>Pipeline</h1><p>Observe ingestion, retrieval, reranking, and validation across the active knowledge index.</p></div>
+          <div class="page-actions"><button class="btn">View registry</button><button class="btn primary" id="refreshIndex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>Refresh index</button></div>
+        </header>
+        <div class="stat-grid">
+          <article class="stat-card"><span>Active version</span><div class="stat-value">v24.9</div><small>text-embed-4 · 1536 dimensions</small></article>
+          <article class="stat-card accent"><span>Pipeline health</span><div class="stat-value">99.98%</div><small>30-day successful runs</small></article>
+          <article class="stat-card"><span>Mean retrieval</span><div class="stat-value">412 ms</div><small class="stat-delta">↓ 38 ms this week</small></article>
+          <article class="stat-card dark"><span>Last handoff</span><div class="stat-value">14m</div><small>1,284 chunks published</small></article>
+        </div>
+        <div class="two-column">
+          <section class="panel">
+            <div class="panel-head"><div><h2>Live architecture</h2><p>Production path · Hover nodes for inspection</p></div><span class="status">All systems normal</span></div>
+            <div class="pipeline-map">
+              <div class="branch-label">Ingestion path</div>
+              <div class="pipeline-row">
+                <div class="pipe-node on"><span class="node-label">Source</span><strong>Documents</strong><small>184 active</small></div><div class="pipe-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></div>
+                <div class="pipe-node on"><span class="node-label">Prepare</span><strong>Parent-child chunking</strong><small>1,284 chunks</small></div><div class="pipe-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></div>
+                <div class="pipe-node on"><span class="node-label">Encode</span><strong>Tokenize + embed</strong><small>1536 dims</small></div><div class="pipe-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></div>
+                <div class="pipe-node on"><span class="node-label">Store</span><strong>Vector index</strong><small>v24.9 active</small></div>
+              </div>
+              <div class="branch-label" style="margin-top:38px">Query path</div>
+              <div class="pipeline-row">
+                <div class="pipe-node"><span class="node-label">Input</span><strong>Embedded query</strong><small>12 tokens</small></div><div class="pipe-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></div>
+                <div class="pipe-node"><span class="node-label">Retrieve</span><strong>Top-k vector search</strong><small>k = 32</small></div><div class="pipe-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></div>
+                <div class="pipe-node"><span class="node-label">Refine</span><strong>Jev reranker</strong><small>3 retained</small></div><div class="pipe-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></div>
+                <div class="pipe-node"><span class="node-label">Answer</span><strong>Ground + validate</strong><small>96% score</small></div>
+              </div>
+              <div class="pipeline-legend"><span><i></i> Production active</span><span>● Runtime component</span><span>Updated Sep 28, 2026 · 17:46 UTC</span></div>
+            </div>
+          </section>
+          <div class="stack">
+            <section class="panel">
+              <div class="panel-head"><div><h2>Recent runs</h2><p>Index and deletion propagation</p></div><button class="row-action">•••</button></div>
+              <div class="run-list">
+                <div class="run"><span class="run-time">18:04:22</span><div><strong>Incremental sync</strong><p>12 added · 2 updated</p></div><span class="status">Success</span></div>
+                <div class="run"><span class="run-time">16:42:09</span><div><strong>Deletion propagation</strong><p>4 stale chunks removed</p></div><span class="status">Success</span></div>
+                <div class="run"><span class="run-time">13:15:44</span><div><strong>Version handoff</strong><p>v24.8 → v24.9</p></div><span class="status">Success</span></div>
+                <div class="run"><span class="run-time">09:00:02</span><div><strong>Scheduled refresh</strong><p>1,276 chunks verified</p></div><span class="status">Success</span></div>
+              </div>
+            </section>
+            <section class="panel"><div class="panel-head"><div><h2>Thresholds</h2><p>Active retrieval configuration</p></div></div><div class="metric-list"><div class="metric-row"><div><strong>Top-k retrieval</strong><p>Initial candidate pool</p></div><div class="metric-score">32</div></div><div class="metric-row"><div><strong>Similarity floor</strong><p>Minimum cosine score</p></div><div class="metric-score">0.82</div></div><div class="metric-row"><div><strong>Rerank limit</strong><p>Context chunks retained</p></div><div class="metric-score">3</div></div></div></section>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <main class="main">
+      <div class="conversation" id="conversation">
+        <div class="conversation-inner">
+          <div class="answer-kicker"><span>Grounded answer</span></div>
+          <h2 class="query-title" id="queryTitle">What are the requirements for our enterprise rollout?</h2>
+          <div class="meta-line">
+            <span class="meta-chip good">96% GROUNDED</span>
+            <span class="meta-chip">3 SOURCES</span>
+            <span class="meta-chip">1.8s</span>
+          </div>
+          <article class="answer" id="answer">
+            <p>The enterprise rollout has four gating requirements: <strong>SSO via SAML 2.0</strong>, automated SCIM provisioning, EU data residency, and a signed data processing agreement. SSO and provisioning must be enabled before the first production workspace is created.<button class="citation" data-source="1" aria-label="View source 1">1</button></p>
+            <p>Security review requires SOC 2 Type II evidence, encryption at rest using AES-256, and customer-managed key support for regulated accounts.<button class="citation" data-source="2" aria-label="View source 2">2</button> The launch plan also identifies a two-week administrator pilot with at least 25 users before general availability.<button class="citation" data-source="3" aria-label="View source 3">3</button></p>
+          </article>
+          <aside class="callout">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 2 21h20L12 3z"/><path d="M12 9v5M12 18h.01"/></svg>
+            <div><strong>Open dependency</strong><p>Customer-managed keys are scheduled for release in October. Regulated accounts should not be migrated until this control is available.</p></div>
+          </aside>
+          <article class="answer">
+            <p>For the rollout owner, the recommended order is: complete legal review, configure identity and access controls, validate regional storage, run the administrator pilot, then approve migration by cohort.</p>
+          </article>
+          <div class="answer-actions">
+            <div class="action-group">
+              <button class="mini-action copy-answer" aria-label="Copy answer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              <button class="mini-action feedback" aria-label="Helpful answer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M7 10v12H3V10h4zM7 20h10a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 18.4 9H14l1-4c.4-1.8-2-2.8-3-1.2L7 10z"/></svg></button>
+              <button class="mini-action feedback" aria-label="Unhelpful answer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M17 14V2h4v12h-4zM17 4H7a2 2 0 0 0-2 1.6l-1.4 7A2 2 0 0 0 5.6 15H10l-1 4c-.4 1.8 2 2.8 3 1.2l5-6.2z"/></svg></button>
+            </div>
+            <span class="verified"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 12 2 2 4-5"/><circle cx="12" cy="12" r="9"/></svg> validation passed</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <form class="composer" id="askForm">
+          <textarea id="askInput" rows="1" placeholder="Ask a follow-up across your knowledge base…" aria-label="Ask a follow-up"></textarea>
+          <div class="composer-bottom">
+            <div class="composer-tools">
+              <button type="button" class="tool-button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg><span>Add context</span></button>
+              <button type="button" class="tool-button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 20v2M8 22h8"/><rect x="8" y="2" width="8" height="14" rx="4"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/></svg><span>Voice</span></button>
+            </div>
+            <button class="send" type="submit" aria-label="Send question"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 14-8-5 16-3-6-6-2zM11 14l3-3"/></svg></button>
+          </div>
+        </form>
+        <div class="legal">Answers are generated from your indexed sources. Verify high-impact decisions.</div>
+      </div>
+    </main>
+
+    <aside class="inspector" id="inspector" aria-label="Sources and retrieval trace">
+      <div class="inspector-head">
+        <div><div class="section-eyebrow">Evidence</div><h2>Why this answer</h2></div>
+        <button class="close-inspector" id="closeInspector" aria-label="Close sources"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
+      </div>
+
+      <section class="trace" aria-label="Retrieval trace">
+        <div class="trace-head"><span>Retrieval trace</span><span class="trace-time">1.8s total</span></div>
+        <div class="trace-flow">
+          <div class="trace-node done"><i class="node-dot"></i><span>Query</span></div><i class="trace-line done"></i>
+          <div class="trace-node done"><i class="node-dot"></i><span>Search</span></div><i class="trace-line done"></i>
+          <div class="trace-node done"><i class="node-dot"></i><span>Rerank</span></div><i class="trace-line done"></i>
+          <div class="trace-node done"><i class="node-dot"></i><span>Verify</span></div>
+        </div>
+        <div class="trace-stats">
+          <div><strong>32 → 3</strong><span>chunks retained</span></div>
+          <div><strong>0.82</strong><span>min similarity</span></div>
+          <div><strong>v24.9</strong><span>index version</span></div>
+        </div>
+      </section>
+
+      <div class="source-title"><strong>Supporting sources</strong><span>3 MATCHES</span></div>
+      <div class="source-list">
+        <button class="source" data-id="1">
+          <div class="source-top"><span class="source-type"><span class="file-badge">PDF</span>Requirements</span><span class="score">94%</span></div>
+          <h3>Enterprise launch gates</h3>
+          <p>“Production workspaces require <mark>SAML SSO, SCIM provisioning and approved EU residency</mark> before activation…”</p>
+          <div class="source-foot"><span>PAGE 12 · § 4.2</span><span>VIEW ↗</span></div>
+        </button>
+        <button class="source" data-id="2">
+          <div class="source-top"><span class="source-type"><span class="file-badge">DOC</span>Security</span><span class="score">91%</span></div>
+          <h3>Enterprise security controls</h3>
+          <p>“Regulated workloads require <mark>AES-256 at rest and customer-managed encryption keys</mark>…”</p>
+          <div class="source-foot"><span>PAGE 8 · § 3.1</span><span>VIEW ↗</span></div>
+        </button>
+        <button class="source" data-id="3">
+          <div class="source-top"><span class="source-type"><span class="file-badge">MD</span>Roadmap</span><span class="score">87%</span></div>
+          <h3>Administrator pilot plan</h3>
+          <p>“A <mark>two-week pilot with 25 or more administrators</mark> precedes the first migration cohort…”</p>
+          <div class="source-foot"><span>LINE 146 · PHASE 2</span><span>VIEW ↗</span></div>
+        </button>
+      </div>
+
+      <div class="index-foot">
+        <div class="index-line"><strong>Index health</strong><span>1,284 / 1,284 CHUNKS</span></div>
+        <div class="progress"><i></i></div>
+      </div>
+    </aside>
+    <section class="workspace-page" id="page-analytics" data-view="analytics">
+      <div class="page-content">
+        <header class="page-header">
+          <div><div class="section-eyebrow">Quality intelligence</div><h1>Analytics</h1><p>Measure adoption, answer quality, coverage gaps, and retrieval performance across your workspace.</p></div>
+          <div class="page-actions"><div class="segmented"><button>7D</button><button class="active">30D</button><button>90D</button></div><button class="btn">Export report</button></div>
+        </header>
+        <div class="stat-grid">
+          <article class="stat-card dark"><span>Questions answered</span><div class="stat-value">4,821</div><small>161 daily average</small></article>
+          <article class="stat-card accent"><span>Grounded answer rate</span><div class="stat-value">94.6%</div><small class="stat-delta">↑ 3.2% from prior period</small></article>
+          <article class="stat-card"><span>Helpful rating</span><div class="stat-value">89.2%</div><small>1,804 responses rated</small></article>
+          <article class="stat-card"><span>No-answer rate</span><div class="stat-value">3.8%</div><small class="stat-delta">↓ 1.1% from prior period</small></article>
+        </div>
+        <div class="two-column">
+          <section class="panel">
+            <div class="panel-head"><div><h2>Answer volume & quality</h2><p>Daily questions with grounded-answer overlay</p></div><div class="source-type"><i class="live-dot"></i> LIVE METRICS</div></div>
+            <div class="chart" aria-label="Thirty day answer volume bar chart">
+              <div class="bar-group"><i class="bar" style="height:46%"></i><i class="bar secondary" style="height:41%"></i></div><div class="bar-group"><i class="bar" style="height:58%"></i><i class="bar secondary" style="height:51%"></i></div><div class="bar-group"><i class="bar" style="height:52%"></i><i class="bar secondary" style="height:48%"></i></div><div class="bar-group"><i class="bar" style="height:72%"></i><i class="bar secondary" style="height:65%"></i></div><div class="bar-group"><i class="bar" style="height:64%"></i><i class="bar secondary" style="height:60%"></i></div><div class="bar-group"><i class="bar" style="height:83%"></i><i class="bar secondary" style="height:77%"></i></div><div class="bar-group"><i class="bar" style="height:74%"></i><i class="bar secondary" style="height:70%"></i></div><div class="bar-group"><i class="bar" style="height:91%"></i><i class="bar secondary" style="height:86%"></i></div><div class="bar-group"><i class="bar" style="height:78%"></i><i class="bar secondary" style="height:74%"></i></div><div class="bar-group"><i class="bar" style="height:95%"></i><i class="bar secondary" style="height:90%"></i></div><div class="bar-group"><i class="bar" style="height:87%"></i><i class="bar secondary" style="height:84%"></i></div><div class="bar-group"><i class="bar" style="height:98%"></i><i class="bar secondary" style="height:93%"></i></div>
+            </div>
+            <div class="chart-labels"><span>SEP 01</span><span>SEP 07</span><span>SEP 14</span><span>SEP 21</span><span>SEP 28</span></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h2>Quality signals</h2><p>How the system is performing</p></div></div>
+            <div class="metric-list">
+              <div class="metric-row"><div><strong>Citation coverage</strong><p>Claims linked to indexed sources</p></div><div class="metric-score">97.1%</div></div>
+              <div class="metric-row"><div><strong>Average confidence</strong><p>Post-validation grounding score</p></div><div class="metric-score">0.91</div></div>
+              <div class="metric-row"><div><strong>Retrieval latency</strong><p>p50 across all questions</p></div><div class="metric-score">412ms</div></div>
+              <div class="metric-row"><div><strong>Fallback precision</strong><p>Correctly withheld answers</p></div><div class="metric-score">96.4%</div></div>
+            </div>
+          </section>
+        </div>
+        <section class="panel" style="margin-top:14px">
+          <div class="panel-head"><div><h2>Knowledge gaps</h2><p>Popular questions without sufficient source coverage</p></div><button class="btn small">Review all 18</button></div>
+          <table class="data-table"><thead><tr><th>Question cluster</th><th>Attempts</th><th>Best match</th><th>Owner</th><th>Action</th></tr></thead><tbody>
+            <tr><td><strong>Mobile device management support</strong></td><td>42</td><td>0.61 similarity</td><td>Unassigned</td><td><button class="btn small">Add source</button></td></tr>
+            <tr><td><strong>Data export SLA for enterprise</strong></td><td>29</td><td>0.67 similarity</td><td>Legal</td><td><button class="btn small">Assign</button></td></tr>
+            <tr><td><strong>Private cloud deployment timeline</strong></td><td>21</td><td>0.58 similarity</td><td>Product</td><td><button class="btn small">Add source</button></td></tr>
+          </tbody></table>
+        </section>
+      </div>
+    </section>
+
+    <section class="workspace-page" id="page-settings" data-view="settings">
+      <div class="page-content">
+        <header class="page-header"><div><div class="section-eyebrow">Workspace control</div><h1>Settings</h1><p>Manage organization details, answer behavior, model configuration, and access policies.</p></div><div class="page-actions"><button class="btn primary" id="saveSettings">Save changes</button></div></header>
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="Settings sections">
+            <button class="active" data-settings="general">General</button><button data-settings="answers">Answer behavior</button><button data-settings="retrieval">Retrieval</button><button data-settings="members">Members & access</button><button data-settings="integrations">Integrations</button><button data-settings="billing">Plan & billing</button>
+          </nav>
+          <div>
+            <section class="panel settings-section active" data-section="general">
+              <div class="panel-head"><div><h2>General</h2><p>Workspace identity and regional preferences</p></div></div>
+              <div class="form-block"><h3>Workspace profile</h3><p>This information appears across your Relay workspace.</p><div class="field-grid"><div class="field"><label>Workspace name</label><input value="Northstar Labs" /></div><div class="field"><label>Default collection</label><select><option>Product intelligence</option><option>Security</option><option>Research</option></select></div><div class="field"><label>Region</label><select><option>European Union</option><option>United States</option><option>Asia Pacific</option></select></div><div class="field"><label>Timezone</label><select><option>UTC</option><option>America/New_York</option><option>Europe/London</option></select></div></div></div>
+              <div class="form-block"><h3>Workspace preferences</h3><p>Control shared behavior for all members.</p><div class="switch-row"><div><strong>Show retrieval traces</strong><p>Let members inspect retrieval and reranking steps</p></div><button class="switch on"></button></div><div class="switch-row"><div><strong>Allow source downloads</strong><p>Members may open and download original documents</p></div><button class="switch on"></button></div></div>
+            </section>
+            <section class="panel settings-section" data-section="answers"><div class="panel-head"><div><h2>Answer behavior</h2><p>Control response style and safeguards</p></div></div><div class="form-block"><div class="field-grid"><div class="field"><label>Default answer length</label><select><option>Concise</option><option>Balanced</option><option>Detailed</option></select></div><div class="field"><label>Citation style</label><select><option>Inline numbered</option><option>Footnotes</option><option>Source cards</option></select></div></div><div class="switch-row"><div><strong>Require citations</strong><p>Every factual answer must include a source</p></div><button class="switch on"></button></div><div class="switch-row"><div><strong>No-answer fallback</strong><p>Withhold answers that fail grounding validation</p></div><button class="switch on"></button></div></div></section>
+            <section class="panel settings-section" data-section="retrieval"><div class="panel-head"><div><h2>Retrieval</h2><p>Search, reranking, and index configuration</p></div></div><div class="form-block"><div class="field-grid"><div class="field"><label>Top-k candidates</label><input type="number" value="32" /></div><div class="field"><label>Similarity threshold</label><input type="number" value="0.82" step="0.01" /></div><div class="field"><label>Reranked context limit</label><input type="number" value="3" /></div><div class="field"><label>Chunking strategy</label><select><option>Parent-child</option><option>Fixed window</option><option>Index card summary</option></select></div></div><div class="subtle-note" style="margin-top:16px">Configuration changes apply to new queries immediately. Chunking changes require a new index version.</div></div></section>
+            <section class="panel settings-section" data-section="members"><div class="panel-head"><div><h2>Members & access</h2><p>12 active members · 3 administrators</p></div><button class="btn small primary">Invite member</button></div><table class="data-table"><thead><tr><th>Member</th><th>Role</th><th>Last active</th></tr></thead><tbody><tr><td><strong>Maya Chen</strong><br><small><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="a0cdc1d9c1e0cecfd2d4c8d3d4c1d28ec5d8c1cdd0ccc5">[email&#160;protected]</a></small></td><td>Owner</td><td>Now</td></tr><tr><td><strong>Alex Morgan</strong><br><small><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="12737e776a527c7d60667a616673603c776a737f627e77">[email&#160;protected]</a></small></td><td>Admin</td><td>2 hours ago</td></tr><tr><td><strong>Priya Shah</strong><br><small><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="acdcdec5d5cdecc2c3ded8c4dfd8cdde82c9d4cdc1dcc0c9">[email&#160;protected]</a></small></td><td>Member</td><td>Yesterday</td></tr></tbody></table></section>
+            <section class="panel settings-section" data-section="integrations"><div class="panel-head"><div><h2>Integrations</h2><p>Connect source systems and workplace tools</p></div></div><div class="form-block"><div class="switch-row"><div><strong>Google Drive</strong><p>Connected · Product Operations folder</p></div><button class="btn small">Manage</button></div><div class="switch-row"><div><strong>Notion</strong><p>Not connected</p></div><button class="btn small">Connect</button></div><div class="switch-row"><div><strong>Slack</strong><p>Connected · #ask-relay</p></div><button class="btn small">Manage</button></div></div></section>
+            <section class="panel settings-section" data-section="billing"><div class="panel-head"><div><h2>Plan & billing</h2><p>Enterprise annual · Renews September 2027</p></div></div><div class="form-block"><h3>Enterprise workspace</h3><p>Unlimited members, 10 GB indexed storage, advanced analytics, SSO, and audit logs.</p><button class="btn">Manage billing</button></div><div class="form-block"><h3>Danger zone</h3><p>Permanently remove this workspace and all indexed data.</p><button class="btn danger">Delete workspace</button></div></section>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">Answer copied</div>
+  </div>
+  <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
+    const inspector = document.getElementById('inspector');
+    const toast = document.getElementById('toast');
+    const askInput = document.getElementById('askInput');
+
+    const notify = (message) => {
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(window.toastTimer);
+      window.toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+    };
+
+    const pageLabels = { ask: 'Product intelligence', knowledge: 'Knowledge base', document: 'Document detail', pipeline: 'Index pipeline', analytics: 'Analytics', settings: 'Settings' };
+    const showPage = (page, updateHash = true) => {
+      const app = document.querySelector('.app');
+      const isAsk = page === 'ask';
+      app.classList.toggle('subpage', !isAsk);
+      document.querySelectorAll('.workspace-page').forEach(view => view.classList.toggle('active', view.dataset.view === page));
+      document.querySelectorAll('.rail [data-page]').forEach(button => button.classList.toggle('active', button.dataset.page === page || (page === 'document' && button.dataset.page === 'knowledge')));
+      document.getElementById('currentCrumb').textContent = pageLabels[page] || pageLabels.ask;
+      inspector.classList.remove('open');
+      if (updateHash) history.replaceState(null, '', page === 'ask' ? '#ask' : `#${page}`);
+      document.querySelector(`#page-${page}`)?.scrollTo(0, 0);
+    };
+
+    document.querySelectorAll('.rail [data-page]').forEach(button => button.addEventListener('click', () => showPage(button.dataset.page)));
+    document.querySelectorAll('.back-knowledge').forEach(button => button.addEventListener('click', () => showPage('knowledge')));
+    document.querySelectorAll('.document-row').forEach(row => row.addEventListener('click', event => {
+      if (!event.target.closest('button') || event.target.closest('.row-action')) showPage('document');
+    }));
+
+    document.querySelectorAll('.settings-nav button').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.settings-nav button').forEach(item => item.classList.remove('active'));
+      document.querySelectorAll('.settings-section').forEach(section => section.classList.remove('active'));
+      button.classList.add('active');
+      document.querySelector(`[data-section="${button.dataset.settings}"]`).classList.add('active');
+    }));
+
+    document.querySelectorAll('.switch').forEach(toggle => toggle.addEventListener('click', () => toggle.classList.toggle('on')));
+    document.querySelectorAll('.segmented').forEach(group => group.querySelectorAll('button').forEach(button => button.addEventListener('click', () => {
+      group.querySelectorAll('button').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+    })));
+
+    document.getElementById('documentSearch').addEventListener('input', event => {
+      const q = event.target.value.toLowerCase();
+      document.querySelectorAll('#documentTable tbody tr').forEach(row => row.style.display = row.innerText.toLowerCase().includes(q) ? 'table-row' : 'none');
+    });
+    document.getElementById('uploadButton').addEventListener('click', () => notify('Upload panel ready'));
+    document.getElementById('refreshIndex').addEventListener('click', event => {
+      event.currentTarget.textContent = 'Refresh queued';
+      notify('Index refresh queued');
+      setTimeout(() => event.currentTarget.textContent = 'Refresh index', 1800);
+    });
+    document.getElementById('saveSettings').addEventListener('click', () => notify('Workspace settings saved'));
+
+    const initialPage = location.hash.replace('#', '');
+    if (pageLabels[initialPage]) showPage(initialPage, false);
+
+    document.getElementById('sourceToggle').addEventListener('click', () => inspector.classList.add('open'));
+    document.getElementById('closeInspector').addEventListener('click', () => inspector.classList.remove('open'));
+
+    document.querySelectorAll('.citation').forEach(citation => {
+      citation.addEventListener('click', () => {
+        const id = citation.dataset.source;
+        inspector.classList.add('open');
+        document.querySelectorAll('.citation, .source').forEach(el => el.classList.remove('active'));
+        citation.classList.add('active');
+        const source = document.querySelector(`.source[data-id="${id}"]`);
+        source.classList.add('active');
+        source.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    });
+
+    document.querySelectorAll('.source').forEach(source => {
+      source.addEventListener('click', () => {
+        document.querySelectorAll('.source, .citation').forEach(el => el.classList.remove('active'));
+        source.classList.add('active');
+        document.querySelector(`.citation[data-source="${source.dataset.id}"]`)?.classList.add('active');
+        notify(`Source ${source.dataset.id} selected`);
+      });
+    });
+
+    document.querySelector('.copy-answer').addEventListener('click', async () => {
+      const text = document.getElementById('answer').innerText;
+      try { await navigator.clipboard.writeText(text); } catch (_) {}
+      notify('Answer copied');
+    });
+
+    document.querySelectorAll('.feedback').forEach(button => button.addEventListener('click', () => {
+      button.style.background = 'var(--acid-soft)';
+      button.style.color = 'var(--ink)';
+      notify('Feedback recorded');
+    }));
+
+    document.querySelectorAll('.thread').forEach(thread => thread.addEventListener('click', () => {
+      document.querySelectorAll('.thread').forEach(item => item.classList.remove('active'));
+      thread.classList.add('active');
+      notify('Conversation opened');
+    }));
+
+    document.getElementById('threadSearch').addEventListener('input', event => {
+      const q = event.target.value.toLowerCase();
+      document.querySelectorAll('.thread').forEach(thread => {
+        thread.style.display = thread.innerText.toLowerCase().includes(q) ? 'grid' : 'none';
+      });
+    });
+
+    askInput.addEventListener('input', () => {
+      askInput.style.height = 'auto';
+      askInput.style.height = `${Math.min(askInput.scrollHeight, 100)}px`;
+    });
+
+    document.getElementById('askForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const value = askInput.value.trim();
+      if (!value) { askInput.focus(); return; }
+      document.getElementById('queryTitle').textContent = value;
+      askInput.value = '';
+      askInput.style.height = 'auto';
+      notify('Searching 1,284 indexed chunks…');
+      document.getElementById('conversation').scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    document.addEventListener('keydown', event => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        document.getElementById('threadSearch').focus();
+      }
+      if (event.key === 'Escape') inspector.classList.remove('open');
+      if (event.key === 'Enter' && !event.shiftKey && document.activeElement === askInput) {
+        event.preventDefault();
+        document.getElementById('askForm').requestSubmit();
+      }
+    });
+  </script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495" integrity="sha512-iIg7k2xntmwu6/uSb5tpc/hySgZc4eoL31yB29W6tJFo2akwjPWcEqnCEdJvGexCL0KEQwVYv5BlowfhVz26hg==" data-cf-beacon='{"version":"2024.11.0","token":"75124c326cb447fe934cde04713ae013","r":1,"spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>

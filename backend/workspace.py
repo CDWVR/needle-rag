@@ -1,0 +1,532 @@
+"""Workspace records that should survive a restart: settings, threads, jobs, and usage."""
+
+import json
+import sqlite3
+import threading
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+
+DEFAULTS = {
+    "workspace_name": "Needle",
+    "profile_name": "Operator",
+    "default_collection": "General",
+    "region": "European Union",
+    "timezone": "UTC",
+    "show_traces": "true",
+    "allow_downloads": "true",
+    "answer_length": "Balanced",
+    "citation_style": "Inline numbered",
+    "require_citations": "true",
+    "withhold_ungrounded": "true",
+    "top_k": "15",
+    "similarity_threshold": "0.30",
+    "max_parents": "5",
+    "chunking": "Parent-child",
+}
+
+
+class WorkspaceStore:
+    def __init__(self, path: str):
+        self._lock = threading.Lock()
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._init()
+
+    def _init(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                document_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                sources_json TEXT,
+                validation_json TEXT,
+                trace_json TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS feedback (
+                message_id TEXT PRIMARY KEY,
+                rating TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                query TEXT NOT NULL,
+                grounded INTEGER NOT NULL,
+                withheld INTEGER NOT NULL,
+                latency_ms INTEGER NOT NULL,
+                source_count INTEGER NOT NULL,
+                best_similarity REAL,
+                candidate_count INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                name TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                status TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS members (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS document_policy (
+                document_id TEXT PRIMARY KEY,
+                collection TEXT NOT NULL,
+                included INTEGER NOT NULL DEFAULT 1,
+                citation_required INTEGER NOT NULL DEFAULT 1,
+                bytes INTEGER NOT NULL DEFAULT 0,
+                stored_name TEXT
+            );
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT,
+                document_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        for key, value in DEFAULTS.items():
+            self.conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        self.conn.execute(
+            "UPDATE jobs SET status = 'failed', error = 'The server restarted before this upload finished.', updated_at = ? WHERE status IN ('queued', 'processing')",
+            (_now(),),
+        )
+        self.conn.commit()
+
+    def settings(self) -> Dict[str, Any]:
+        with self._lock:
+            rows = self.conn.execute("SELECT key, value FROM settings").fetchall()
+        raw = {row["key"]: row["value"] for row in rows}
+        return {
+            "workspace_name": raw.get("workspace_name", DEFAULTS["workspace_name"]),
+            "profile_name": raw.get("profile_name", DEFAULTS["profile_name"]),
+            "default_collection": raw.get("default_collection", DEFAULTS["default_collection"]),
+            "region": raw.get("region", DEFAULTS["region"]),
+            "timezone": raw.get("timezone", DEFAULTS["timezone"]),
+            "show_traces": raw.get("show_traces", "true") == "true",
+            "allow_downloads": raw.get("allow_downloads", "true") == "true",
+            "answer_length": raw.get("answer_length", "Balanced"),
+            "citation_style": raw.get("citation_style", "Inline numbered"),
+            "require_citations": raw.get("require_citations", "true") == "true",
+            "withhold_ungrounded": raw.get("withhold_ungrounded", "true") == "true",
+            "top_k": _bounded_int(raw.get("top_k"), 15, 1, 50),
+            "similarity_threshold": _bounded_float(raw.get("similarity_threshold"), 0.30, 0, 1),
+            "max_parents": _bounded_int(raw.get("max_parents"), 5, 1, 12),
+            "chunking": raw.get("chunking", "Parent-child"),
+        }
+
+    def save_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.settings()
+        mapping = {
+            "workspace_name": str(payload.get("workspace_name", current["workspace_name"])).strip() or current["workspace_name"],
+            "profile_name": str(payload.get("profile_name", current["profile_name"])).strip() or current["profile_name"],
+            "default_collection": str(payload.get("default_collection", current["default_collection"])).strip() or "General",
+            "region": str(payload.get("region", current["region"])),
+            "timezone": str(payload.get("timezone", current["timezone"])),
+            "show_traces": "true" if payload.get("show_traces", current["show_traces"]) else "false",
+            "allow_downloads": "true" if payload.get("allow_downloads", current["allow_downloads"]) else "false",
+            "answer_length": str(payload.get("answer_length", current["answer_length"])),
+            "citation_style": str(payload.get("citation_style", current["citation_style"])),
+            "require_citations": "true" if payload.get("require_citations", current["require_citations"]) else "false",
+            "withhold_ungrounded": "true" if payload.get("withhold_ungrounded", current["withhold_ungrounded"]) else "false",
+            "top_k": str(_bounded_int(payload.get("top_k"), current["top_k"], 1, 50)),
+            "similarity_threshold": f"{_bounded_float(payload.get('similarity_threshold'), current['similarity_threshold'], 0, 1):.2f}",
+            "max_parents": str(_bounded_int(payload.get("max_parents"), current["max_parents"], 1, 12)),
+            "chunking": str(payload.get("chunking", current["chunking"])),
+        }
+        with self._lock:
+            self.conn.executemany(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                list(mapping.items()),
+            )
+            self.conn.commit()
+        return self.settings()
+
+    def list_conversations(self, query: str = "") -> List[Dict[str, Any]]:
+        sql = """
+            SELECT c.*, (
+                SELECT COUNT(*) FROM messages m
+                WHERE m.conversation_id = c.id AND m.role = 'assistant' AND m.sources_json IS NOT NULL AND m.sources_json != '[]'
+            ) AS source_threads
+            FROM conversations c
+        """
+        params: List[Any] = []
+        if query.strip():
+            sql += " WHERE c.title LIKE ?"
+            params.append(f"%{query.strip()}%")
+        sql += " ORDER BY c.updated_at DESC"
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def ensure_conversation(self, conversation_id: Optional[str], title: str, document_id: Optional[str]) -> str:
+        now = _now()
+        with self._lock:
+            if conversation_id:
+                row = self.conn.execute("SELECT id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+                if row:
+                    self.conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
+                    self.conn.commit()
+                    return conversation_id
+            new_id = str(uuid.uuid4())
+            self.conn.execute(
+                "INSERT INTO conversations (id, title, document_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (new_id, title.strip()[:120] or "New conversation", document_id, now, now),
+            )
+            self.conn.commit()
+            return new_id
+
+    def create_conversation(self) -> Dict[str, Any]:
+        now = _now()
+        new_id = str(uuid.uuid4())
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO conversations (id, title, document_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)",
+                (new_id, "New conversation", now, now),
+            )
+            self.conn.commit()
+        return {"id": new_id, "title": "New conversation", "document_id": None, "created_at": now, "updated_at": now}
+
+    def messages(self, conversation_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT m.*, f.rating FROM messages m
+                LEFT JOIN feedback f ON f.message_id = m.id
+                WHERE m.conversation_id = ?
+                ORDER BY m.created_at ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["sources"] = _loads(item.pop("sources_json"))
+            item["validation"] = _loads(item.pop("validation_json"))
+            item["trace"] = _loads(item.pop("trace_json"))
+            result.append(item)
+        return result
+
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        sources: Optional[list] = None,
+        validation: Optional[dict] = None,
+        trace: Optional[dict] = None,
+    ) -> str:
+        message_id = str(uuid.uuid4())
+        now = _now()
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO messages (id, conversation_id, role, content, sources_json, validation_json, trace_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    conversation_id,
+                    role,
+                    content,
+                    json.dumps(sources or []),
+                    json.dumps(validation) if validation else None,
+                    json.dumps(trace) if trace else None,
+                    now,
+                ),
+            )
+            if role == "user":
+                self.conn.execute(
+                    "UPDATE conversations SET title = CASE WHEN title = 'New conversation' THEN ? ELSE title END, updated_at = ? WHERE id = ?",
+                    (content.strip()[:120], now, conversation_id),
+                )
+            else:
+                self.conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
+            self.conn.commit()
+        return message_id
+
+    def set_feedback(self, message_id: str, rating: str) -> bool:
+        if rating not in {"helpful", "unhelpful"}:
+            return False
+        with self._lock:
+            row = self.conn.execute("SELECT id FROM messages WHERE id = ? AND role = 'assistant'", (message_id,)).fetchone()
+            if not row:
+                return False
+            self.conn.execute(
+                "INSERT INTO feedback (message_id, rating, created_at) VALUES (?, ?, ?) ON CONFLICT(message_id) DO UPDATE SET rating = excluded.rating, created_at = excluded.created_at",
+                (message_id, rating, _now()),
+            )
+            self.conn.commit()
+        return True
+
+    def record_event(self, **fields: Any) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO events (id, created_at, query, grounded, withheld, latency_ms, source_count, best_similarity, candidate_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    _now(),
+                    fields.get("query", "")[:500],
+                    1 if fields.get("grounded") else 0,
+                    1 if fields.get("withheld") else 0,
+                    int(fields.get("latency_ms") or 0),
+                    int(fields.get("source_count") or 0),
+                    fields.get("best_similarity"),
+                    int(fields.get("candidate_count") or 0),
+                ),
+            )
+            self.conn.commit()
+
+    def record_run(self, name: str, detail: str, status: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO runs (id, created_at, name, detail, status) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), _now(), name, detail, status),
+            )
+            self.conn.commit()
+
+    def recent_runs(self, limit: int = 12) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def analytics(self, days: int) -> Dict[str, Any]:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._lock:
+            events = self.conn.execute("SELECT * FROM events WHERE created_at >= ? ORDER BY created_at ASC", (since,)).fetchall()
+            feedback = self.conn.execute(
+                """
+                SELECT f.rating FROM feedback f
+                JOIN messages m ON m.id = f.message_id
+                WHERE f.created_at >= ?
+                """,
+                (since,),
+            ).fetchall()
+            gaps = self.conn.execute(
+                """
+                SELECT query, COUNT(*) AS attempts, MAX(best_similarity) AS best_similarity
+                FROM events
+                WHERE created_at >= ? AND grounded = 0
+                GROUP BY query
+                ORDER BY attempts DESC
+                LIMIT 8
+                """,
+                (since,),
+            ).fetchall()
+        total = len(events)
+        grounded = sum(1 for event in events if event["grounded"])
+        withheld = sum(1 for event in events if event["withheld"])
+        helpful = sum(1 for row in feedback if row["rating"] == "helpful")
+        rated = len(feedback)
+        latencies = [event["latency_ms"] for event in events if event["latency_ms"]]
+        latencies.sort()
+        p50 = latencies[len(latencies) // 2] if latencies else 0
+        buckets: Dict[str, Dict[str, int]] = {}
+        for event in events:
+            day = event["created_at"][:10]
+            slot = buckets.setdefault(day, {"questions": 0, "grounded": 0})
+            slot["questions"] += 1
+            slot["grounded"] += 1 if event["grounded"] else 0
+        return {
+            "days": days,
+            "questions": total,
+            "grounded_rate": round(grounded / total, 4) if total else 0,
+            "withheld_rate": round(withheld / total, 4) if total else 0,
+            "helpful_rate": round(helpful / rated, 4) if rated else 0,
+            "ratings": rated,
+            "retrieval_p50_ms": p50,
+            "series": [{"day": day, **counts} for day, counts in buckets.items()],
+            "gaps": [
+                {
+                    "query": row["query"],
+                    "attempts": row["attempts"],
+                    "best_similarity": row["best_similarity"],
+                }
+                for row in gaps
+            ],
+        }
+
+    def start_job(self, filename: str) -> str:
+        job_id = str(uuid.uuid4())
+        now = _now()
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO jobs (id, filename, status, error, document_id, created_at, updated_at) VALUES (?, ?, 'queued', NULL, NULL, ?, ?)",
+                (job_id, filename, now, now),
+            )
+            self.conn.commit()
+        return job_id
+
+    def update_job(self, job_id: str, status: str, error: Optional[str] = None, document_id: Optional[str] = None) -> None:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE jobs SET status = ?, error = ?, document_id = COALESCE(?, document_id), updated_at = ? WHERE id = ?",
+                (status, error, document_id, _now(), job_id),
+            )
+            self.conn.commit()
+
+    def job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def active_jobs(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM jobs WHERE status IN ('queued', 'processing') ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_policy(self, document_id: str, *, collection: str, byte_size: int, stored_name: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO document_policy (document_id, collection, included, citation_required, bytes, stored_name)
+                VALUES (?, ?, 1, 1, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    bytes = excluded.bytes,
+                    stored_name = excluded.stored_name
+                """,
+                (document_id, collection, byte_size, stored_name),
+            )
+            self.conn.commit()
+
+    def update_policy(self, document_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        current = self.policy(document_id)
+        if not current:
+            return None
+        included = fields.get("included", current["included"])
+        citation_required = fields.get("citation_required", current["citation_required"])
+        collection = str(fields.get("collection", current["collection"])).strip() or current["collection"]
+        with self._lock:
+            self.conn.execute(
+                "UPDATE document_policy SET included = ?, citation_required = ?, collection = ? WHERE document_id = ?",
+                (1 if included else 0, 1 if citation_required else 0, collection, document_id),
+            )
+            self.conn.commit()
+        return self.policy(document_id)
+
+    def policy(self, document_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM document_policy WHERE document_id = ?", (document_id,)).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["included"] = bool(item["included"])
+        item["citation_required"] = bool(item["citation_required"])
+        return item
+
+    def policies(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute("SELECT * FROM document_policy").fetchall()
+        result = {}
+        for row in rows:
+            item = dict(row)
+            item["included"] = bool(item["included"])
+            item["citation_required"] = bool(item["citation_required"])
+            result[item["document_id"]] = item
+        return result
+
+    def excluded_document_ids(self) -> List[str]:
+        with self._lock:
+            rows = self.conn.execute("SELECT document_id FROM document_policy WHERE included = 0").fetchall()
+        return [row["document_id"] for row in rows]
+
+    def forget_document(self, document_id: str) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM document_policy WHERE document_id = ?", (document_id,))
+            self.conn.commit()
+
+    def list_members(self) -> List[Dict[str, Any]]:
+        settings = self.settings()
+        with self._lock:
+            rows = self.conn.execute("SELECT * FROM members ORDER BY created_at ASC").fetchall()
+        members = [
+            {
+                "id": "owner",
+                "name": settings["profile_name"],
+                "email": "local-operator",
+                "role": "Owner",
+                "created_at": None,
+            }
+        ]
+        members.extend(dict(row) for row in rows)
+        return members
+
+    def invite_member(self, name: str, email: str, role: str) -> Dict[str, Any]:
+        member_id = str(uuid.uuid4())
+        now = _now()
+        role = role if role in {"Admin", "Member"} else "Member"
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO members (id, name, email, role, created_at) VALUES (?, ?, ?, ?, ?)",
+                (member_id, name.strip(), email.strip().lower(), role, now),
+            )
+            self.conn.commit()
+        return {"id": member_id, "name": name.strip(), "email": email.strip().lower(), "role": role, "created_at": now}
+
+    def reset(self) -> None:
+        with self._lock:
+            for table in ("conversations", "messages", "feedback", "events", "runs", "members", "document_policy", "jobs"):
+                self.conn.execute(f"DELETE FROM {table}")
+            self.conn.execute("DELETE FROM settings")
+            for key, value in DEFAULTS.items():
+                self.conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, value))
+            self.conn.commit()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _loads(value: Optional[str]):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
+def _bounded_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
+def _bounded_float(value: Any, default: float, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
