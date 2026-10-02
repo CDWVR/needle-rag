@@ -45,7 +45,8 @@ class IndexStore:
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 activated_at TEXT,
-                embed_style TEXT NOT NULL DEFAULT 'raw'
+                embed_style TEXT NOT NULL DEFAULT 'raw',
+                chunking TEXT NOT NULL DEFAULT 'Parent-child'
             )
             """
         )
@@ -81,6 +82,8 @@ class IndexStore:
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(index_registry)")}
         if "embed_style" not in columns:
             self.conn.execute("ALTER TABLE index_registry ADD COLUMN embed_style TEXT NOT NULL DEFAULT 'raw'")
+        if "chunking" not in columns:
+            self.conn.execute("ALTER TABLE index_registry ADD COLUMN chunking TEXT NOT NULL DEFAULT 'Parent-child'")
         self.conn.commit()
 
     def close(self) -> None:
@@ -111,6 +114,7 @@ class IndexStore:
                 "created_at": now,
                 "activated_at": now,
                 "embed_style": "raw",
+                "chunking": "Parent-child",
             }
 
     def list_versions(self) -> List[Dict[str, Any]]:
@@ -126,17 +130,45 @@ class IndexStore:
         embedding_model: str,
         collection_name: str,
         embed_style: str = "raw",
+        chunking: str = "Parent-child",
     ) -> None:
         with self._lock:
             self.conn.execute(
                 """
                 INSERT INTO index_registry
-                    (version_id, embedding_model, collection_name, status, created_at, activated_at, embed_style)
-                VALUES (?, ?, ?, 'building', ?, NULL, ?)
+                    (version_id, embedding_model, collection_name, status, created_at, activated_at, embed_style, chunking)
+                VALUES (?, ?, ?, 'building', ?, NULL, ?, ?)
                 """,
-                (version_id, embedding_model, collection_name, _now(), embed_style),
+                (version_id, embedding_model, collection_name, _now(), embed_style, chunking),
             )
             self.conn.commit()
+
+    def rollback_active(self) -> Optional[Dict[str, Any]]:
+        """Point search back at the newest retired index without deleting data."""
+        with self._lock:
+            active = self.conn.execute(
+                "SELECT version_id FROM index_registry WHERE status = 'active' ORDER BY activated_at DESC LIMIT 1"
+            ).fetchone()
+            retired = self.conn.execute(
+                "SELECT version_id FROM index_registry WHERE status = 'retired' ORDER BY activated_at DESC LIMIT 1"
+            ).fetchone()
+            if not active or not retired:
+                return None
+            now = _now()
+            self.conn.execute(
+                "UPDATE index_registry SET status = 'retired' WHERE version_id = ?",
+                (active["version_id"],),
+            )
+            self.conn.execute(
+                "UPDATE index_registry SET status = 'active', activated_at = ? WHERE version_id = ?",
+                (now, retired["version_id"]),
+            )
+            self.conn.commit()
+            row = self.conn.execute(
+                "SELECT * FROM index_registry WHERE version_id = ?",
+                (retired["version_id"],),
+            ).fetchone()
+        return dict(row) if row else None
 
     def publish_version(self, version_id: str) -> None:
         """Atomically retire the current active index and publish the new one."""

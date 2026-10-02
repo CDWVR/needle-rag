@@ -780,7 +780,7 @@ async function renderPipeline() {
     <div class="page-content">
       <header class="page-header">
         <div><div class="section-eyebrow">Index architecture</div><h1>Pipeline</h1><p>Ingestion, retrieval, Jev reranking, and the grounding check for the active index.</p></div>
-        <div class="page-actions"><button class="btn primary" id="refreshIndex" type="button">Refresh index</button></div>
+        <div class="page-actions"><button class="btn" id="rollbackIndex" type="button">Roll back</button><button class="btn" id="reconcileIndex" type="button">Reconcile</button><button class="btn primary" id="refreshIndex" type="button">Refresh index</button></div>
       </header>
       <div class="stat-grid">
         <article class="stat-card"><span>Active version</span><div class="stat-value">${escapeHtml(String(index.version_id || "").slice(0, 8) || "—")}</div><small>${escapeHtml(index.embedding_model || "")} · ${index.embedding_dimensions ?? "—"} dims</small></article>
@@ -813,6 +813,24 @@ async function renderPipeline() {
         </section>
       </div>
     </div>`;
+  listen($("#rollbackIndex"), "click", async () => {
+    try {
+      await api.rollbackIndex();
+      notify("Previous index restored");
+      await renderPipeline();
+    } catch (err) {
+      notify(err.message);
+    }
+  });
+  listen($("#reconcileIndex"), "click", async () => {
+    try {
+      const result = await api.reconcileIndex();
+      notify(`Reconcile removed ${result.removed} orphaned records`);
+      await renderPipeline();
+    } catch (err) {
+      notify(err.message);
+    }
+  });
   listen($("#refreshIndex"), "click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -899,7 +917,6 @@ const settingFields = [
   ["setSim", "similarity_threshold"],
   ["setParents", "max_parents"],
   ["setRrf", "rrf_k"],
-  ["setChunk", "chunking"],
 ];
 
 function applySettingsForm() {
@@ -953,7 +970,6 @@ function settingsPayload() {
     max_parents: number("max_parents", "Reranked context limit", 1, 12),
     rrf_k: number("rrf_k", "Fusion constant", 1, 200),
     contextual_embeddings: Boolean(form.contextual_embeddings),
-    chunking: form.chunking || current.chunking || "Parent-child",
   };
 }
 
@@ -1006,7 +1022,6 @@ async function renderSettings() {
               <div class="field"><label for="setSim">Similarity threshold</label><input id="setSim" type="number" min="0" max="1" step="0.01" /></div>
               <div class="field"><label for="setParents">Reranked context limit</label><input id="setParents" type="number" min="1" max="12" /></div>
               <div class="field"><label for="setRrf">Fusion constant</label><input id="setRrf" type="number" min="1" max="200" /></div>
-              <div class="field"><label for="setChunk">Chunking strategy</label><select id="setChunk">${optionList(["Parent-child", "Fixed window", "Index card summary"], state.form.chunking)}</select></div>
             </div>
             <div class="switch-row"><div><strong>Heading-aware embeddings</strong><p>Next index refresh embeds the section title with each passage</p></div>${switches("contextual_embeddings")}</div>
             </div>

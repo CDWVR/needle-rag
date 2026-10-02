@@ -111,6 +111,8 @@ class WorkspaceStore:
         )
         self._ensure_column("messages", "original_query", "TEXT")
         self._ensure_column("messages", "rewritten_query", "TEXT")
+        self._ensure_column("document_policy", "content_hash", "TEXT")
+        self._ensure_column("document_policy", "deleted", "INTEGER NOT NULL DEFAULT 0")
         for key, value in DEFAULTS.items():
             self.conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
         self.conn.execute(
@@ -167,7 +169,7 @@ class WorkspaceStore:
             "max_parents": str(_bounded_int(payload.get("max_parents"), current["max_parents"], 1, 12)),
             "rrf_k": str(_bounded_int(payload.get("rrf_k"), current["rrf_k"], 1, 200)),
             "contextual_embeddings": "true" if payload.get("contextual_embeddings", current["contextual_embeddings"]) else "false",
-            "chunking": str(payload.get("chunking", current["chunking"])),
+            "chunking": payload.get("chunking") or current["chunking"],
         }
         with self._lock:
             self.conn.executemany(
@@ -425,17 +427,36 @@ class WorkspaceStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def set_policy(self, document_id: str, *, collection: str, byte_size: int, stored_name: str) -> None:
+    def find_hash(self, content_hash: str) -> Optional[str]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT document_id FROM document_policy WHERE content_hash = ? AND deleted = 0",
+                (content_hash,),
+            ).fetchone()
+        return row["document_id"] if row else None
+
+    def tombstone(self, document_id: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE document_policy SET deleted = 1, included = 0 WHERE document_id = ?",
+                (document_id,),
+            )
+            self.conn.commit()
+
+    def set_policy(self, document_id: str, *, collection: str, byte_size: int, stored_name: str, content_hash: str = "") -> None:
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO document_policy (document_id, collection, included, citation_required, bytes, stored_name)
-                VALUES (?, ?, 1, 1, ?, ?)
+                INSERT INTO document_policy (document_id, collection, included, citation_required, bytes, stored_name, content_hash, deleted)
+                VALUES (?, ?, 1, 1, ?, ?, ?, 0)
                 ON CONFLICT(document_id) DO UPDATE SET
                     bytes = excluded.bytes,
-                    stored_name = excluded.stored_name
+                    stored_name = excluded.stored_name,
+                    content_hash = excluded.content_hash,
+                    deleted = 0,
+                    included = 1
                 """,
-                (document_id, collection, byte_size, stored_name),
+                (document_id, collection, byte_size, stored_name, content_hash),
             )
             self.conn.commit()
 
@@ -462,6 +483,7 @@ class WorkspaceStore:
         item = dict(row)
         item["included"] = bool(item["included"])
         item["citation_required"] = bool(item["citation_required"])
+        item["deleted"] = bool(item.get("deleted"))
         return item
 
     def policies(self) -> Dict[str, Dict[str, Any]]:
@@ -472,6 +494,7 @@ class WorkspaceStore:
             item = dict(row)
             item["included"] = bool(item["included"])
             item["citation_required"] = bool(item["citation_required"])
+            item["deleted"] = bool(item.get("deleted"))
             result[item["document_id"]] = item
         return result
 

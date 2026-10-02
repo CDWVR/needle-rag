@@ -39,6 +39,8 @@ from pipeline_logic import (
     deterministic_violations,
     kept_sentences,
     passage_looks_like_instructions,
+    publish_allowed,
+    recall_at_k,
     contextual_passage,
     filter_by_similarity,
     fused_fallback_scores,
@@ -225,8 +227,31 @@ def _parent_id(chunk_id: str, metadata: Dict[str, Any]) -> str:
     return f"{metadata.get('document_id', '')}_{metadata.get('chunk_index', 0)}"
 
 
-def process_document(file_bytes: bytes, filename: str, file_type: str, chunking: str = "Parent-child") -> DocumentInfo:
+def _ocr_pdf(path: str) -> str:
+    if os.getenv("OCR_ENABLED", "false").strip().lower() not in {"1", "true", "yes"}:
+        return ""
+    try:
+        import pytesseract
+        from pdf2image import convert_from_path
+    except ImportError:
+        log.warning("OCR is enabled but pytesseract or pdf2image is not installed")
+        return ""
+    try:
+        images = convert_from_path(path)
+    except Exception:
+        log.exception("OCR could not read %s", path)
+        return ""
+    pages = []
+    for index, image in enumerate(images, start=1):
+        text = pytesseract.image_to_string(image) or ""
+        if text.strip():
+            pages.append(f"# Page {index}\n{text.strip()}")
+    return "\n\n".join(pages)
+
+
+def process_document(file_bytes: bytes, filename: str, file_type: str, chunking: str = "Parent-child", content_hash: str = "") -> DocumentInfo:
     active = require_compatible()
+    chunking = active.get("chunking") or chunking or "Parent-child"
     document_id = str(uuid.uuid4())
     suffix = os.path.splitext(filename)[1] or ".bin"
     temp_path = ""
@@ -239,7 +264,7 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
             raw_docs = PyMuPDFLoader(temp_path).load()
             ftype = "pdf"
             num_pages = len(raw_docs)
-            if num_pages == 0:
+            if num_pages == 0 and not raw_docs:
                 raise ValueError("No text could be extracted.")
             md_splits = []
             for doc in raw_docs:
@@ -259,6 +284,17 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
             md_splits = md_splitter.split_text(full_text)
             for split in md_splits:
                 split.metadata["page"] = 1
+
+        if not md_splits and (file_type == "application/pdf" or filename.lower().endswith(".pdf")):
+            ocr_text = _ocr_pdf(temp_path)
+            if ocr_text.strip():
+                md_splits = md_splitter.split_text(ocr_text)
+                for split in md_splits:
+                    split.metadata["page"] = 1
+                ftype = "pdf"
+                num_pages = max(num_pages, 1)
+        if not md_splits:
+            raise ValueError("No text could be extracted.")
 
         parent_splitter = RecursiveCharacterTextSplitter(
             chunk_size=PARENT_CHUNK_SIZE,
@@ -325,6 +361,8 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
                         "unit_type": unit_type,
                         "token_count": len(tokenize(passage)),
                         "version_id": active["version_id"],
+                        "chunking": chunking,
+                        "content_hash": content_hash,
                     }
                 )
                 fts_rows.append((document_id, chunk_id, filename, page_number, header, passage))
@@ -398,23 +436,75 @@ def _delete_document(document_id: str) -> bool:
     return existed
 
 
-def refresh_active_index(embed_style: str = "raw") -> Dict[str, Any]:
-    """Copy the active index into a new collection, re-embed it, then publish."""
+def _golden_rows() -> List[Dict[str, Any]]:
+    path = os.path.join(os.path.dirname(__file__), "eval", "golden.jsonl")
+    if not os.path.exists(path):
+        return []
+    rows = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def _top_document_ids(collection_name: str, query: str, k: int) -> List[str]:
+    collection = chroma_client.get_collection(collection_name)
+    if collection.count() == 0 or not tokenize(query):
+        return []
+    embedding = _embed([query])[0]
+    result = collection.query(query_embeddings=[embedding], n_results=min(k, collection.count()), include=["metadatas"])
+    found = []
+    for metadata in (result.get("metadatas") or [[]])[0]:
+        document_id = (metadata or {}).get("document_id")
+        if document_id and document_id not in found:
+            found.append(document_id)
+    return found
+
+
+def _golden_recall(old_collection: str, new_collection: str) -> tuple:
+    rows = _golden_rows()
+    if not rows:
+        return 1.0, 1.0
+    k = _env_int("EVAL_K", 5)
+    old_scores = []
+    new_scores = []
+    for row in rows:
+        expected = row.get("document_ids") or []
+        question = row.get("question") or ""
+        old_scores.append(recall_at_k(_top_document_ids(old_collection, question, k), expected, k))
+        new_scores.append(recall_at_k(_top_document_ids(new_collection, question, k), expected, k))
+    old_mean = sum(old_scores) / len(old_scores)
+    new_mean = sum(new_scores) / len(new_scores)
+    return old_mean, new_mean
+
+
+def rollback_index() -> Optional[Dict[str, Any]]:
     with _mutation_lock:
-        return _refresh_active_index(embed_style)
+        return store.rollback_active()
 
 
-def _refresh_active_index(embed_style: str) -> Dict[str, Any]:
+def refresh_active_index(embed_style: str = "raw", chunking: str = "Parent-child", content_hashes: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Copy unchanged vectors, re-embed the rest, then publish if the count and recall gates pass."""
+    with _mutation_lock:
+        return _refresh_active_index(embed_style, chunking, content_hashes or {})
+
+
+def _refresh_active_index(embed_style: str, chunking: str, content_hashes: Dict[str, str]) -> Dict[str, Any]:
     active = store.ensure_active_version(EMBEDDING_MODEL_ID)
     old = chroma_client.get_collection(active["collection_name"])
-    payload = old.get(include=["documents", "metadatas"])
+    try:
+        payload = old.get(include=["documents", "metadatas", "embeddings"])
+    except Exception:
+        payload = old.get(include=["documents", "metadatas"])
     ids = list(payload.get("ids") or [])
     documents = list(payload.get("documents") or [])
     metadatas = list(payload.get("metadatas") or [])
     version_id = str(uuid.uuid4())
     collection_name = "needle_" + version_id.replace("-", "")[:12]
     style = embed_style if embed_style in {"raw", "contextual"} else "raw"
-    store.begin_version(version_id, EMBEDDING_MODEL_ID, collection_name, embed_style=style)
+    store.begin_version(version_id, EMBEDDING_MODEL_ID, collection_name, embed_style=style, chunking=chunking)
     created = False
     try:
         new_collection = chroma_client.get_or_create_collection(
@@ -425,18 +515,44 @@ def _refresh_active_index(embed_style: str) -> Dict[str, Any]:
         stored_documents: List[str] = []
         stored_metadata: List[Dict[str, Any]] = []
         embed_inputs: List[str] = []
+        copied_embeddings: List[Any] = []
+        needs_embed: List[int] = []
+        old_embeddings = list(payload.get("embeddings") or [])
+        previous_style = active.get("embed_style") or "raw"
+        previous_chunking = active.get("chunking") or "Parent-child"
         contextual = style == "contextual"
-        for document, metadata in zip(documents, metadatas):
+        config_changed = previous_style != style or previous_chunking != chunking
+        for index, (document, metadata) in enumerate(zip(documents, metadatas)):
             metadata = dict(metadata or {})
             raw = metadata.get("raw_text") or document or ""
+            document_hash = content_hashes.get(metadata.get("document_id") or "")
+            hash_changed = bool(document_hash and metadata.get("content_hash") and document_hash != metadata.get("content_hash"))
+            reusable = (
+                not config_changed
+                and not hash_changed
+                and index < len(old_embeddings)
+                and old_embeddings[index] is not None
+            )
             metadata["raw_text"] = raw
             metadata["embed_style"] = style
+            metadata["chunking"] = chunking
             metadata["version_id"] = version_id
+            if document_hash:
+                metadata["content_hash"] = document_hash
             stored_documents.append(raw)
             stored_metadata.append(metadata)
-            embed_inputs.append(contextual_passage(metadata.get("header_context") or "", raw, contextual))
+            if reusable:
+                copied_embeddings.append(list(old_embeddings[index]))
+            else:
+                copied_embeddings.append(None)
+                needs_embed.append(index)
+                embed_inputs.append(contextual_passage(metadata.get("header_context") or "", raw, contextual))
+        if needs_embed:
+            fresh = _embed(embed_inputs)
+            for slot, vector in zip(needs_embed, fresh):
+                copied_embeddings[slot] = vector
         if ids:
-            embeddings = _embed(embed_inputs)
+            embeddings = copied_embeddings
             for start in range(0, len(ids), 100):
                 new_collection.add(
                     ids=ids[start:start + 100],
@@ -446,6 +562,12 @@ def _refresh_active_index(embed_style: str) -> Dict[str, Any]:
                 )
         if new_collection.count() != len(ids):
             raise RuntimeError("Versioned index handoff aborted because the copy count did not match.")
+        old_recall, new_recall = _golden_recall(active["collection_name"], collection_name)
+        margin = _env_float("EVAL_RECALL_DROP", 0.10)
+        if not publish_allowed(old_recall, new_recall, margin):
+            raise RuntimeError(
+                f"Refresh blocked because recall fell from {old_recall:.2f} to {new_recall:.2f}."
+            )
         store.publish_version(version_id)
     except Exception:
         store.fail_version(version_id)

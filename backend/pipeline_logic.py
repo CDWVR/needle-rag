@@ -244,6 +244,18 @@ def deterministic_violations(answer: str, contexts: List[Dict[str, Any]], *, min
     return problems
 
 
+def recall_at_k(retrieved_ids: List[str], expected_ids: List[str], k: int) -> float:
+    expected = [item for item in expected_ids if item]
+    if not expected:
+        return 1.0
+    found = set(retrieved_ids[: max(0, k)])
+    return len(found.intersection(expected)) / len(set(expected))
+
+
+def publish_allowed(old_recall: float, new_recall: float, margin: float) -> bool:
+    return new_recall + 1e-9 >= old_recall - margin
+
+
 def verdict_passes(verdict: Optional[Dict[str, Any]]) -> bool:
     if not verdict:
         return False

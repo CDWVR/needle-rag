@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from rag_engine import (
     condense_query,
     process_document,
     refresh_active_index,
+    rollback_index,
 )
 from pipeline_logic import needs_condense
 from workspace import WorkspaceStore
@@ -74,7 +76,7 @@ class SettingsPayload(BaseModel):
     max_parents: int = 5
     rrf_k: int = 60
     contextual_embeddings: bool = True
-    chunking: str = "Parent-child"
+    chunking: Optional[str] = None
 
 
 class PolicyPayload(BaseModel):
@@ -262,8 +264,14 @@ async def read_index():
 async def refresh_index():
     started = time.perf_counter()
     try:
-        style = "contextual" if workspace.settings()["contextual_embeddings"] else "raw"
-        status = refresh_active_index(style)
+        settings = workspace.settings()
+        style = "contextual" if settings["contextual_embeddings"] else "raw"
+        hashes = {
+            doc_id: policy.get("content_hash")
+            for doc_id, policy in workspace.policies().items()
+            if policy.get("content_hash") and not policy.get("deleted")
+        }
+        status = refresh_active_index(style, os.getenv("CHUNKING_STRATEGY", "Parent-child"), hashes)
     except NeedleError as exc:
         workspace.record_run("Version handoff", str(exc), "Failed")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -307,11 +315,20 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="File is larger than 50 MB.")
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    existing_id = workspace.find_hash(digest)
+    if existing_id:
+        return {
+            "id": existing_id,
+            "name": filename,
+            "duplicate": True,
+            "message": "This file is already indexed, so it was not ingested again.",
+        }
     settings = workspace.settings()
     job_id = workspace.start_job(filename)
     workspace.update_job(job_id, "processing")
     try:
-        doc = process_document(file_bytes, filename, file.content_type or "", settings["chunking"])
+        doc = process_document(file_bytes, filename, file.content_type or "", content_hash=digest)
     except Exception as exc:
         log.exception("Upload failed")
         message = str(exc) if isinstance(exc, ValueError) else "The file could not be indexed."
@@ -326,6 +343,7 @@ async def upload_document(file: UploadFile = File(...)):
         collection=settings["default_collection"],
         byte_size=len(file_bytes),
         stored_name=stored_name,
+        content_hash=digest,
     )
     workspace.update_job(job_id, "completed", document_id=doc.id)
     workspace.record_run("Ingestion", f"{filename}: {doc.num_chunks} chunks", "Success")
@@ -377,6 +395,9 @@ async def download_document(document_id: str):
 
 @app.delete("/api/documents/{document_id}")
 async def remove_document(document_id: str):
+    if not any(doc["id"] == document_id for doc in get_all_documents()):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    workspace.tombstone(document_id)
     found = delete_document(document_id)
     path = _stored_path(document_id)
     if path and os.path.exists(path):
@@ -385,7 +406,34 @@ async def remove_document(document_id: str):
     if not found:
         raise HTTPException(status_code=404, detail="Document not found.")
     workspace.record_run("Deletion propagation", f"Removed {document_id}", "Success")
-    return {"success": True}
+    return {"success": True, "found": found}
+
+
+@app.post("/api/index/rollback")
+async def rollback():
+    restored = rollback_index()
+    if not restored:
+        raise HTTPException(status_code=409, detail="There is no earlier index version to restore.")
+    workspace.record_run("Rollback", f"Restored {restored['version_id']}", "Success")
+    return {"version_id": restored["version_id"], "collection_name": restored["collection_name"]}
+
+
+@app.post("/api/index/reconcile")
+async def reconcile():
+    removed = 0
+    live = {doc["id"] for doc in get_all_documents()}
+    for doc_id, policy in workspace.policies().items():
+        if policy.get("deleted") and doc_id in live:
+            delete_document(doc_id)
+            removed += 1
+    for name in os.listdir(UPLOAD_DIR):
+        document_id = os.path.splitext(name)[0]
+        policy = workspace.policy(document_id)
+        if not policy or policy.get("deleted"):
+            os.remove(os.path.join(UPLOAD_DIR, name))
+            removed += 1
+    workspace.record_run("Reconcile", f"Removed {removed} orphaned records", "Success")
+    return {"removed": removed}
 
 
 @app.post("/api/chat")

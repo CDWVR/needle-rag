@@ -33,6 +33,8 @@ export const api = {
   deleteDocument: (id) => json(`/api/documents/${id}`, { method: "DELETE" }),
   index: () => json("/api/index"),
   refreshIndex: () => json("/api/index/refresh", { method: "POST", body: "{}" }),
+  rollbackIndex: () => json("/api/index/rollback", { method: "POST", body: "{}" }),
+  reconcileIndex: () => json("/api/index/reconcile", { method: "POST", body: "{}" }),
   analytics: (days) => json(`/api/analytics?days=${days}`),
   members: () => json("/api/members"),
   invite: (body) => json("/api/members", { method: "POST", body: JSON.stringify(body) }),

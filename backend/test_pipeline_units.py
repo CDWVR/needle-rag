@@ -22,6 +22,8 @@ from pipeline_logic import (
     filter_by_similarity,
     index_card,
     needs_condense,
+    publish_allowed,
+    recall_at_k,
     reciprocal_rank_fusion,
     select_parents,
     tokenize,
@@ -82,6 +84,12 @@ class PipelineLogicTests(unittest.TestCase):
         self.assertEqual(scores[0], 1.0)
         self.assertGreater(scores[0], scores[1])
         self.assertGreater(scores[1], scores[2])
+
+    def test_recall_and_publish_gate(self):
+        self.assertEqual(recall_at_k(["a", "b", "c"], ["b"], 2), 1.0)
+        self.assertEqual(recall_at_k(["a"], ["b"], 1), 0.0)
+        self.assertTrue(publish_allowed(0.8, 0.75, 0.1))
+        self.assertFalse(publish_allowed(0.8, 0.6, 0.1))
 
     def test_missing_citation_fails_closed(self):
         problems = deterministic_violations("The limit is 30 days [2].", [{"text": "Return within 30 days."}], min_quote_chars=8)
@@ -203,6 +211,12 @@ class WorkspaceMessageTests(unittest.TestCase):
     def tearDown(self):
         self.store.conn.close()
         self.tmp.cleanup()
+
+    def test_duplicate_hash_is_found_until_the_file_is_tombstoned(self):
+        self.store.set_policy("doc-1", collection="General", byte_size=4, stored_name="doc-1.pdf", content_hash="abc")
+        self.assertEqual(self.store.find_hash("abc"), "doc-1")
+        self.store.tombstone("doc-1")
+        self.assertIsNone(self.store.find_hash("abc"))
 
     def test_follow_up_stores_original_and_rewritten_query(self):
         conversation = self.store.create_conversation()
