@@ -1,0 +1,16 @@
+{
+  "recorded_at": "2026-10-02T17:10:00Z",
+  "harness": "backend/eval/run_eval.py",
+  "golden_file": "backend/eval/golden.jsonl",
+  "golden_questions": 0,
+  "recall_at_k": null,
+  "mrr": null,
+  "faithfulness": null,
+  "p95_latency_ms": null,
+  "notes": [
+    "The golden file is empty, so the harness exits before retrieval and cannot report recall, MRR, faithfulness, or latency.",
+    "Faithfulness is not computed by the harness even when a key is set; the script only prints that the checker would be used.",
+    "Ablation does not rerun retrieval without Jev.",
+    "Unit tests: 22 passed in 0.226s (process wall about 491ms)."
+  ]
+}
