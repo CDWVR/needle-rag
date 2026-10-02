@@ -191,6 +191,59 @@ def select_parents(scored_children: List[Dict[str, Any]], limit: int) -> List[Di
     return ordered[:limit]
 
 
+_INJECTION = (
+    re.compile(r"ignore (all |any |the )?(previous|prior|above) instructions", re.I),
+    re.compile(r"disregard (the )?(system|previous|prior)", re.I),
+    re.compile(r"you are now", re.I),
+    re.compile(r"<\s*/?\s*system\s*>", re.I),
+)
+
+
+def passage_looks_like_instructions(text: str) -> bool:
+    return any(pattern.search(text or "") for pattern in _INJECTION)
+
+
+def split_sentences(answer: str) -> List[str]:
+    parts = re.split(r"(?<=[.!?])\s+", (answer or "").strip())
+    return [part.strip() for part in parts if part.strip()]
+
+
+def kept_sentences(answer: str, unsupported_indexes: List[int], *, minimum_chars: int) -> Dict[str, Any]:
+    sentences = split_sentences(answer)
+    blocked = set(unsupported_indexes)
+    kept = [sentence for index, sentence in enumerate(sentences, start=1) if index not in blocked]
+    text = " ".join(kept).strip()
+    return {
+        "text": text,
+        "partially_supported": bool(sentences) and len(kept) < len(sentences) and bool(kept),
+        "enough": len(text) >= minimum_chars,
+    }
+
+
+def deterministic_violations(answer: str, contexts: List[Dict[str, Any]], *, min_quote_chars: int) -> List[str]:
+    """Fail closed when citations, quotations, or numbers are not in the cited text."""
+    problems = []
+    cited = [int(number) for number in re.findall(r"\[(\d+)\]", answer or "")]
+    limit = len(contexts)
+    for number in cited:
+        if number < 1 or number > limit:
+            problems.append(f"Citation [{number}] does not match a retrieved passage.")
+    corpus = "\n".join(str(context.get("text") or "") for context in contexts)
+    for quote in re.findall(r"[\"“](.{8,}?)[\"”]", answer or "", flags=re.S):
+        snippet = quote.strip()
+        if len(snippet) >= min_quote_chars and snippet not in corpus:
+            problems.append("A quotation in the answer is not in the cited passages.")
+            break
+    for number in re.findall(r"\d[\d,]*(?:\.\d+)?", answer or ""):
+        if re.fullmatch(r"\d", number):
+            continue
+        plain = number.replace(",", "")
+        if number not in corpus and plain not in corpus:
+            problems.append(f"The number {number} is not in the cited passages.")
+            break
+    return problems
+
+
 def verdict_passes(verdict: Optional[Dict[str, Any]]) -> bool:
     if not verdict:
         return False

@@ -289,6 +289,7 @@ function renderConversation() {
       <span class="meta-chip ${validation.passed ? "good" : ""}">${assistant ? (validation.passed ? "GROUNDED" : "CHECK FAILED") : "WAITING"}</span>
       ${validation.confidence ? `<span class="meta-chip">${escapeHtml(String(validation.confidence).toUpperCase())} CONFIDENCE</span>` : ""}
       ${validation.degraded ? `<span class="meta-chip">DEGRADED</span>` : ""}
+      ${validation.partially_supported ? `<span class="meta-chip">PARTIAL</span>` : ""}
       <span class="meta-chip">${sources.length} SOURCE${sources.length === 1 ? "" : "S"}</span>
     </div>
     <article class="answer" id="answer">${body}</article>
