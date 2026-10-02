@@ -122,6 +122,63 @@ class ScoreCache:
             self._values[key] = (float(score), self._clock())
 
 
+class CircuitBreaker:
+    """Opens after repeated failures and closes again once the cooldown has passed."""
+
+    def __init__(self, failure_limit: int, reset_seconds: float, clock: Callable[[], float] = time.monotonic):
+        self.failure_limit = failure_limit
+        self.reset_seconds = reset_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._open_until = 0.0
+
+    def closed(self) -> bool:
+        with self._lock:
+            if self._open_until and self._clock() >= self._open_until:
+                self._failures = 0
+                self._open_until = 0.0
+            return self._open_until == 0.0
+
+    def success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._open_until = 0.0
+
+    def failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self.failure_limit:
+                self._open_until = self._clock() + self.reset_seconds
+
+    def status(self) -> str:
+        return "closed" if self.closed() else "open"
+
+
+def confidence_bucket(score: float, *, medium: float, high: float) -> str:
+    if score >= high:
+        return "high"
+    if score >= medium:
+        return "medium"
+    return "low"
+
+
+def rank_summary(scored: List[Dict[str, Any]], *, keep_threshold: float) -> Dict[str, Any]:
+    ordered = sorted(scored, key=lambda item: float(item.get("score") or 0), reverse=True)
+    top = float(ordered[0]["score"]) if ordered else 0.0
+    kept = [item for item in ordered if float(item.get("score") or 0) >= keep_threshold]
+    return {"ordered": ordered, "top_score": top, "kept": kept, "kept_count": len(kept)}
+
+
+def fused_fallback_scores(count: int) -> List[float]:
+    """Rank-only scores used when neither Jev nor a local cross-encoder is available."""
+    if count <= 0:
+        return []
+    if count == 1:
+        return [1.0]
+    return [1.0 - (index / (count - 1)) * 0.5 for index in range(count)]
+
+
 def select_parents(scored_children: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
     """One parent per group, ordered by the strongest Jev score inside the group."""
     best: Dict[str, Dict[str, Any]] = {}

@@ -10,8 +10,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 from index_store import IndexStore
 from workspace import WorkspaceStore
 from pipeline_logic import (
+    CircuitBreaker,
     ScoreCache,
+    confidence_bucket,
     contextual_passage,
+    fused_fallback_scores,
+    rank_summary,
     filter_by_similarity,
     index_card,
     needs_condense,
@@ -55,6 +59,37 @@ class PipelineLogicTests(unittest.TestCase):
     def test_contextual_passage_keeps_raw_text_separate(self):
         self.assertEqual(contextual_passage("Safety", "Wear gloves.", False), "Wear gloves.")
         self.assertEqual(contextual_passage("Safety", "Wear gloves.", True), "Safety\nWear gloves.")
+
+    def test_low_top_score_keeps_none_when_under_the_floor(self):
+        summary = rank_summary(
+            [{"id": "a", "score": 0.1}, {"id": "b", "score": 0.05}],
+            keep_threshold=0.2,
+        )
+        self.assertEqual(summary["kept_count"], 0)
+        self.assertEqual(summary["top_score"], 0.1)
+        self.assertEqual(summary["ordered"][0]["id"], "a")
+
+    def test_confidence_buckets(self):
+        self.assertEqual(confidence_bucket(0.2, medium=0.35, high=0.6), "low")
+        self.assertEqual(confidence_bucket(0.4, medium=0.35, high=0.6), "medium")
+        self.assertEqual(confidence_bucket(0.8, medium=0.35, high=0.6), "high")
+
+    def test_fused_fallback_preserves_rank_order(self):
+        scores = fused_fallback_scores(3)
+        self.assertEqual(scores[0], 1.0)
+        self.assertGreater(scores[0], scores[1])
+        self.assertGreater(scores[1], scores[2])
+
+    def test_circuit_opens_after_repeated_failures(self):
+        now = {"t": 0.0}
+        breaker = CircuitBreaker(2, 30, clock=lambda: now["t"])
+        self.assertTrue(breaker.closed())
+        breaker.failure()
+        self.assertTrue(breaker.closed())
+        breaker.failure()
+        self.assertFalse(breaker.closed())
+        now["t"] = 31
+        self.assertTrue(breaker.closed())
 
     def test_score_cache_expires(self):
         now = {"t": 0.0}

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import json
+import time
 import uuid
 import tempfile
 import threading
@@ -32,11 +33,15 @@ from pipeline_logic import (
     JevUnavailable,
     NeedleError,
     NO_EVIDENCE_FALLBACK,
+    CircuitBreaker,
     ScoreCache,
+    confidence_bucket,
     contextual_passage,
     filter_by_similarity,
+    fused_fallback_scores,
     index_card,
     normalize_query,
+    rank_summary,
     reciprocal_rank_fusion,
     select_parents,
     tokenize,
@@ -80,8 +85,20 @@ JEV_MAX_CONCURRENCY = _env_int("JEV_MAX_CONCURRENCY", 4)
 JEV_CACHE_TTL_SECONDS = _env_float("JEV_CACHE_TTL_SECONDS", 3600)
 CONDENSE_MAX_TOKENS = _env_int("CONDENSE_MAX_TOKENS", 120)
 CONDENSE_HISTORY_TURNS = _env_int("CONDENSE_HISTORY_TURNS", 8)
+RETRY_THRESHOLD = _env_float("RETRY_THRESHOLD", 0.35)
+RETRY_TOP_K = _env_int("RETRY_TOP_K", 40)
+RELATED_LIMIT = _env_int("RELATED_LIMIT", 3)
+CIRCUIT_FAILURES = _env_int("CIRCUIT_FAILURES", 3)
+CIRCUIT_RESET_SECONDS = _env_float("CIRCUIT_RESET_SECONDS", 60)
+WRITER_ATTEMPTS = _env_int("WRITER_ATTEMPTS", 2)
+CONFIDENCE_HIGH = _env_float("CONFIDENCE_HIGH", 0.60)
+CONFIDENCE_MEDIUM = _env_float("CONFIDENCE_MEDIUM", 0.35)
+CHECKER_MODEL = os.getenv("CHECKER_MODEL", "google/gemini-2.5-flash").strip()
 MAX_PARENTS = 5
 _jev_score_cache = ScoreCache(JEV_CACHE_TTL_SECONDS)
+_jev_breaker = CircuitBreaker(CIRCUIT_FAILURES, CIRCUIT_RESET_SECONDS)
+_writer_breaker = CircuitBreaker(CIRCUIT_FAILURES, CIRCUIT_RESET_SECONDS)
+_last_rerank_mode = "jev"
 
 STORE_DIR = os.path.join(os.path.dirname(__file__), "chroma_store")
 os.makedirs(STORE_DIR, exist_ok=True)
@@ -161,6 +178,9 @@ def index_status() -> Dict[str, Any]:
         "rrf_k": RRF_K,
         "embed_style": active.get("embed_style") or "raw",
         "index_status": active["status"],
+        "jev_circuit": _jev_breaker.status(),
+        "writer_circuit": _writer_breaker.status(),
+        "rerank_mode": _last_rerank_mode,
     }
 
 
@@ -555,12 +575,31 @@ def condense_query(history: List[Dict[str, Any]], question: str) -> str:
         "Return only the query.\n\n"
         f"{transcript}\n\nLatest question:\n{question}"
     )
-    rewritten = _openrouter_chat(
+    rewritten = _guarded_writer(
         [{"role": "user", "content": prompt}],
         temperature=0,
         max_tokens=CONDENSE_MAX_TOKENS,
     )
     return " ".join(rewritten.split())[:500] or question
+
+
+def _guarded_writer(messages: List[Dict[str, str]], *, temperature: float, max_tokens: int, model: Optional[str] = None) -> str:
+    if not _writer_breaker.closed():
+        raise NeedleError("The answer model is temporarily unavailable.")
+    delay = 0.4
+    last_error: Optional[Exception] = None
+    for attempt in range(max(1, WRITER_ATTEMPTS)):
+        try:
+            text = _openrouter_chat(messages, temperature=temperature, max_tokens=max_tokens, model=model)
+            _writer_breaker.success()
+            return text
+        except NeedleError as exc:
+            last_error = exc
+            _writer_breaker.failure()
+            if attempt + 1 < WRITER_ATTEMPTS:
+                time.sleep(delay)
+                delay *= 2
+    raise NeedleError("The answer model on OpenRouter did not return a draft.") from last_error
 
 
 def _jev_scores(query: str, passages: List[str]) -> List[float]:
@@ -609,13 +648,72 @@ def _rerank_with_jev(query: str, candidates: List[Dict[str, Any]], version_id: s
             original = misses[offset]
             _jev_score_cache.put((normalized, candidates[original]["chunk_id"], version_id), score)
             scores[original] = score
-    ranked = []
-    for index, score in scores.items():
-        if score < JEV_RELEVANCE_THRESHOLD:
-            continue
-        ranked.append({"document_index": index, "score": score})
+    ranked = [{"document_index": index, "score": score} for index, score in scores.items()]
     ranked.sort(key=lambda item: item["score"], reverse=True)
     return ranked
+
+
+def _cross_encoder_scores(query: str, passages: List[str]) -> Optional[List[float]]:
+    try:
+        from sentence_transformers import CrossEncoder
+    except ImportError:
+        return None
+    try:
+        model_name = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        encoder = CrossEncoder(model_name)
+        raw_scores = encoder.predict([(query, passage) for passage in passages])
+    except Exception:
+        log.exception("Local cross-encoder failed")
+        return None
+    scores = []
+    for value in raw_scores:
+        number = float(value)
+        scores.append(1.0 / (1.0 + pow(2.718281828, -number)))
+    return scores
+
+
+def _fallback_scores(query: str, candidates: List[Dict[str, Any]]) -> tuple:
+    local = _cross_encoder_scores(query, [candidate["text"] for candidate in candidates])
+    if local is not None:
+        ranked = [{"document_index": index, "score": score} for index, score in enumerate(local)]
+        ranked.sort(key=lambda item: item["score"], reverse=True)
+        return ranked, "cross-encoder"
+    ranked = [
+        {"document_index": index, "score": score}
+        for index, score in enumerate(fused_fallback_scores(len(candidates)))
+    ]
+    return ranked, "fused"
+
+
+def _rank_candidates(query: str, candidates: List[Dict[str, Any]], version_id: str) -> tuple:
+    global _last_rerank_mode
+    if _jev_breaker.closed():
+        try:
+            ranked = _rerank_with_jev(query, candidates, version_id)
+            _jev_breaker.success()
+            _last_rerank_mode = "jev"
+            return ranked, "jev"
+        except Exception:
+            log.exception("Jev failed; using the fallback ranker")
+            _jev_breaker.failure()
+    ranked, mode = _fallback_scores(query, candidates)
+    _last_rerank_mode = mode
+    return ranked, mode
+
+
+def rewrite_search_query(question: str) -> str:
+    rewritten = _guarded_writer(
+        [{
+            "role": "user",
+            "content": (
+                "Rewrite this search query with different words and the same meaning. "
+                f"Return only the query.\n\n{question}"
+            ),
+        }],
+        temperature=0,
+        max_tokens=CONDENSE_MAX_TOKENS,
+    )
+    return " ".join(rewritten.split())[:500] or question
 
 
 def _load_parent(child: Dict[str, Any]) -> Dict[str, Any]:
@@ -632,6 +730,7 @@ def _load_parent(child: Dict[str, Any]) -> Dict[str, Any]:
             "vector_similarity": child.get("similarity"),
             "matched_passage": child["text"],
             "unit_type": child.get("unit_type") or "child",
+            "relation": child.get("relation") or "supporting",
         }
     parent_text = child.get("parent_text") or child["text"]
     return {
@@ -645,6 +744,7 @@ def _load_parent(child: Dict[str, Any]) -> Dict[str, Any]:
         "vector_similarity": child.get("similarity"),
         "matched_passage": child["text"],
         "unit_type": child.get("unit_type") or "child",
+        "relation": child.get("relation") or "supporting",
     }
 
 
@@ -677,7 +777,13 @@ def _assemble_prompt(contexts: List[Dict[str, Any]], query: str, answer_length: 
     )
 
 
-def _openrouter_chat(messages: List[Dict[str, str]], *, temperature: float, max_tokens: int) -> str:
+def _openrouter_chat(
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float,
+    max_tokens: int,
+    model: Optional[str] = None,
+) -> str:
     try:
         response = httpx.post(
             OPENROUTER_CHAT_URL,
@@ -686,7 +792,7 @@ def _openrouter_chat(messages: List[Dict[str, str]], *, temperature: float, max_
                 "Content-Type": "application/json",
             },
             json={
-                "model": OPENROUTER_MODEL,
+                "model": model or OPENROUTER_MODEL,
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
@@ -708,7 +814,7 @@ def _openrouter_chat(messages: List[Dict[str, str]], *, temperature: float, max_
 
 
 def _generate_draft(prompt: str) -> str:
-    return _openrouter_chat(
+    return _guarded_writer(
         [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -764,7 +870,7 @@ def _validate_answer(query: str, contexts: List[Dict[str, Any]], answer: str) ->
         "relevant is true only when the draft addresses the question.\n\n"
         f"QUESTION:\n{query}\n\nPASSAGES:\n{passage_block}\n\nDRAFT:\n{answer}"
     )
-    raw = _openrouter_chat(
+    raw = _guarded_writer(
         [{"role": "user", "content": prompt}],
         temperature=0,
         max_tokens=300,
@@ -850,55 +956,117 @@ def generate_answer_stream(
 
         yield _event({"type": "status", "stage": "search", "message": "Searching the active index…"})
         _collection, active_version = _active_collection()
-        vector_hits = _vector_candidates(
-            query,
-            document_id,
-            top_k=top_k,
-            similarity_threshold=similarity_threshold,
-            exclude_ids=exclude_document_ids,
+        search_query = query
+        width = top_k
+        first_top = None
+        retry_used = False
+        retry_helped = False
+        summary = {"top_score": 0.0, "kept": [], "ordered": [], "kept_count": 0}
+        mode = "jev"
+        for attempt in (0, 1):
+            vector_hits = _vector_candidates(
+                search_query,
+                document_id,
+                top_k=width,
+                similarity_threshold=similarity_threshold,
+                exclude_ids=exclude_document_ids,
+            )
+            keyword_hits = _keyword_candidates(
+                search_query,
+                document_id,
+                top_k=width,
+                exclude_ids=exclude_document_ids,
+            )
+            candidates = reciprocal_rank_fusion([vector_hits, keyword_hits], k=rrf_k)
+            if not candidates:
+                summary = {"top_score": 0.0, "kept": [], "ordered": [], "kept_count": 0}
+                mode = _last_rerank_mode
+            else:
+                yield _event({"type": "status", "stage": "rerank", "message": "Jev is reranking the passages…"})
+                ranked, mode = _rank_candidates(search_query, candidates, active_version["version_id"])
+                scored = []
+                for item in ranked:
+                    index = int(item["document_index"])
+                    if index < 0 or index >= len(candidates):
+                        continue
+                    child = dict(candidates[index])
+                    child["score"] = float(item.get("score") or 0)
+                    scored.append(child)
+                summary = rank_summary(scored, keep_threshold=JEV_RELEVANCE_THRESHOLD)
+            if attempt == 0 and mode == "jev" and summary["top_score"] < RETRY_THRESHOLD:
+                retry_used = True
+                first_top = summary["top_score"]
+                yield _event({"type": "status", "stage": "retry", "message": "Trying a broader search…"})
+                try:
+                    search_query = rewrite_search_query(query)
+                except NeedleError:
+                    log.warning("Could not rewrite the query for a retry")
+                    break
+                width = RETRY_TOP_K
+                continue
+            if retry_used:
+                retry_helped = summary["top_score"] > (first_top or 0)
+            break
+        log.info(
+            "Retrieval retry_used=%s retry_helped=%s top_score=%.3f mode=%s",
+            retry_used,
+            retry_helped,
+            summary["top_score"],
+            mode,
         )
-        keyword_hits = _keyword_candidates(
-            query,
-            document_id,
-            top_k=top_k,
-            exclude_ids=exclude_document_ids,
-        )
-        candidates = reciprocal_rank_fusion([vector_hits, keyword_hits], k=rrf_k)
+        confidence = confidence_bucket(summary["top_score"], medium=CONFIDENCE_MEDIUM, high=CONFIDENCE_HIGH)
+        if mode != "jev":
+            confidence = "low"
         trace = {
             "type": "trace",
-            "candidates": len(candidates),
-            "top_k": top_k,
+            "candidates": len(summary["ordered"]),
+            "top_k": width,
             "similarity_threshold": similarity_threshold,
             "rrf_k": rrf_k,
-            "retrieval_query": query,
+            "retrieval_query": search_query,
+            "top_score": round(summary["top_score"], 4),
+            "kept_count": summary["kept_count"],
+            "retry": retry_used,
+            "retry_helped": retry_helped,
+            "rerank_mode": mode,
+            "confidence": confidence,
         }
-        if not candidates:
+        low_after_retry = retry_used and summary["top_score"] < RETRY_THRESHOLD
+        abstain = summary["kept_count"] == 0 or low_after_retry or mode == "fused" and summary["kept_count"] == 0
+        if abstain:
+            related = []
+            for child in summary["ordered"][:RELATED_LIMIT]:
+                child = dict(child)
+                child["jev_score"] = child.get("score") or 0
+                child["relation"] = "related"
+                related.append(_load_parent(child))
             yield _event({**trace, "kept": 0})
-            yield from _fallback_stream(
-                "No passage cleared the similarity threshold.",
-                NO_EVIDENCE_FALLBACK,
-            )
+            yield _event({
+                "type": "validation",
+                "passed": False,
+                "grounded": False,
+                "safe": True,
+                "relevant": False,
+                "confidence": confidence,
+                "degraded": mode != "jev",
+                "reason": "No passage was strong enough to confirm an answer.",
+            })
+            if related:
+                yield _event({"type": "sources", "data": related})
+            yield _event({
+                "type": "chunk",
+                "content": NO_EVIDENCE_FALLBACK + " The closest passages are shown as related, not confirmed.",
+            })
+            yield _event({"type": "done"})
             return
 
-        yield _event({"type": "status", "stage": "rerank", "message": "Jev is reranking the passages…"})
-        ranked = _rerank_with_jev(query, candidates, active_version["version_id"])
-        scored = []
-        for item in ranked:
-            index = int(item["document_index"])
-            if index < 0 or index >= len(candidates):
-                continue
-            child = dict(candidates[index])
-            child["jev_score"] = float(item.get("score") or 0)
-            scored.append(child)
-        chosen = select_parents(scored, max_parents)
-        if not chosen:
-            yield _event({**trace, "kept": 0})
-            yield from _fallback_stream(
-                "Jev did not keep any passage as useful evidence.",
-                NO_EVIDENCE_FALLBACK,
-            )
-            return
-
+        chosen_children = []
+        for child in summary["kept"]:
+            child = dict(child)
+            child["jev_score"] = child["score"]
+            child["relation"] = "supporting"
+            chosen_children.append(child)
+        chosen = select_parents(chosen_children, max_parents)
         yield _event({"type": "status", "stage": "context", "message": "Fetching the parent passages…"})
         contexts = [_load_parent(child) for child in chosen]
         yield _event({**trace, "kept": len(contexts)})
@@ -909,7 +1077,13 @@ def generate_answer_stream(
         yield _event({"type": "status", "stage": "validate", "message": "Checking that the answer is grounded…"})
         verdict = _validate_answer(query, contexts, draft)
         passed = verdict_passes(verdict)
-        yield _event({"type": "validation", "passed": passed, **verdict})
+        yield _event({
+            "type": "validation",
+            "passed": passed,
+            "confidence": confidence,
+            "degraded": mode != "jev",
+            **verdict,
+        })
         if not passed and withhold_ungrounded:
             yield _event({"type": "chunk", "content": validation_fallback(verdict.get("reason", ""))})
             yield _event({"type": "done"})

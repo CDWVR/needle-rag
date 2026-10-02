@@ -287,6 +287,8 @@ function renderConversation() {
     <h2 class="query-title">${escapeHtml(question?.content || "Question")}</h2>
     <div class="meta-line">
       <span class="meta-chip ${validation.passed ? "good" : ""}">${assistant ? (validation.passed ? "GROUNDED" : "CHECK FAILED") : "WAITING"}</span>
+      ${validation.confidence ? `<span class="meta-chip">${escapeHtml(String(validation.confidence).toUpperCase())} CONFIDENCE</span>` : ""}
+      ${validation.degraded ? `<span class="meta-chip">DEGRADED</span>` : ""}
       <span class="meta-chip">${sources.length} SOURCE${sources.length === 1 ? "" : "S"}</span>
     </div>
     <article class="answer" id="answer">${body}</article>
@@ -781,7 +783,7 @@ async function renderPipeline() {
       </header>
       <div class="stat-grid">
         <article class="stat-card"><span>Active version</span><div class="stat-value">${escapeHtml(String(index.version_id || "").slice(0, 8) || "—")}</div><small>${escapeHtml(index.embedding_model || "")} · ${index.embedding_dimensions ?? "—"} dims</small></article>
-        <article class="stat-card accent"><span>Jev</span><div class="stat-value">${index.jev_configured ? "Ready" : "Key"}</div><small>${escapeHtml(index.jev_model || "")}</small></article>
+        <article class="stat-card accent"><span>Jev</span><div class="stat-value">${index.jev_circuit === "open" ? "Degraded" : index.jev_configured ? "Ready" : "Key"}</div><small>${escapeHtml(index.rerank_mode || index.jev_model || "")}</small></article>
         <article class="stat-card"><span>Documents</span><div class="stat-value">${index.documents ?? 0}</div><small>${index.chunks ?? 0} chunks</small></article>
         <article class="stat-card dark"><span>Compatibility</span><div class="stat-value">${index.compatible ? "Match" : "Blocked"}</div><small>Similarity floor ${settings.similarity_threshold}</small></article>
       </div>
