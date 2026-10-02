@@ -345,6 +345,7 @@ function renderInspector(message) {
         <div><strong>${Number(trace.similarity_threshold ?? state.settings?.similarity_threshold ?? 0).toFixed(2)}</strong><span>min similarity</span></div>
         <div><strong>${escapeHtml(String(state.index?.version_id || "").slice(0, 8) || "—")}</strong><span>index version</span></div>
       </div>
+      <details><summary>View trace</summary><pre>${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>
     </section>`
     : "";
   body.innerHTML = `
@@ -873,9 +874,9 @@ async function renderAnalytics() {
         <div class="chart">${series.map((point) => `<div class="bar-group" title="${escapeHtml(point.day)}"><i class="bar" style="height:${Math.round(((Number(point.questions) || 0) / max) * 100)}%"></i><i class="bar secondary" style="height:${Math.round(((Number(point.grounded) || 0) / max) * 100)}%"></i></div>`).join("") || `<p class="empty-note">Ask a few questions to fill this chart.</p>`}</div>
       </section>
       <section class="panel" style="margin-top:14px">
-        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>Questions that were not grounded</p></div><button class="btn small" id="gapUpload" type="button">Add source</button></div>
-        <div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Attempts</th><th>Best vector score</th></tr></thead><tbody>
-          ${gaps.map((gap) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : Number(gap.best_similarity).toFixed(2)}</td></tr>`).join("") || `<tr><td colspan="3"><p class="empty-note">No withheld questions in this range.</p></td></tr>`}
+        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>No coverage means Jev found nothing strong. Check failed means the draft was the problem.</p></div><button class="btn small" id="gapUpload" type="button">Add source</button></div>
+        <div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best vector score</th></tr></thead><tbody>
+          ${gaps.map((gap) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Draft failed the check" : "No strong passage"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : Number(gap.best_similarity).toFixed(2)}</td></tr>`).join("") || `<tr><td colspan="4"><p class="empty-note">No withheld questions in this range.</p></td></tr>`}
         </tbody></table></div>
       </section>
     </div>`;

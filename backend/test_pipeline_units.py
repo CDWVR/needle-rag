@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from index_store import IndexStore
 from workspace import WorkspaceStore
+from eval.metrics import mean_reciprocal_rank
 from pipeline_logic import (
     CircuitBreaker,
     ScoreCache,
@@ -90,6 +91,7 @@ class PipelineLogicTests(unittest.TestCase):
         self.assertEqual(recall_at_k(["a"], ["b"], 1), 0.0)
         self.assertTrue(publish_allowed(0.8, 0.75, 0.1))
         self.assertFalse(publish_allowed(0.8, 0.6, 0.1))
+        self.assertEqual(mean_reciprocal_rank(["x", "b"], ["b"]), 0.5)
 
     def test_missing_citation_fails_closed(self):
         problems = deterministic_violations("The limit is 30 days [2].", [{"text": "Return within 30 days."}], min_quote_chars=8)
@@ -233,6 +235,9 @@ class WorkspaceMessageTests(unittest.TestCase):
         self.assertEqual(stored["original_query"], "Does it require SAML?")
         self.assertEqual(stored["rewritten_query"], "Does enterprise SSO require SAML?")
         self.assertEqual(stored["content"], "Does it require SAML?")
+        self.store.record_event(query="Does it require SAML?", grounded=False, withheld=True, latency_ms=10, source_count=0, best_similarity=0.1, candidate_count=4, outcome="no_coverage")
+        gaps = self.store.analytics(30)["gaps"]
+        self.assertEqual(gaps[0]["outcome"], "no_coverage")
 
 
 if __name__ == "__main__":

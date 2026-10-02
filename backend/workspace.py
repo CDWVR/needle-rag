@@ -113,6 +113,18 @@ class WorkspaceStore:
         self._ensure_column("messages", "rewritten_query", "TEXT")
         self._ensure_column("document_policy", "content_hash", "TEXT")
         self._ensure_column("document_policy", "deleted", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("events", "outcome", "TEXT")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS eval_candidates (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                query TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         for key, value in DEFAULTS.items():
             self.conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
         self.conn.execute(
@@ -300,6 +312,21 @@ class WorkspaceStore:
                 "INSERT INTO feedback (message_id, rating, created_at) VALUES (?, ?, ?) ON CONFLICT(message_id) DO UPDATE SET rating = excluded.rating, created_at = excluded.created_at",
                 (message_id, rating, _now()),
             )
+            if rating == "unhelpful":
+                question = self.conn.execute(
+                    """
+                    SELECT content FROM messages
+                    WHERE conversation_id = (SELECT conversation_id FROM messages WHERE id = ?)
+                      AND role = 'user' AND created_at <= (SELECT created_at FROM messages WHERE id = ?)
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (message_id, message_id),
+                ).fetchone()
+                if question:
+                    self.conn.execute(
+                        "INSERT INTO eval_candidates (id, message_id, query, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+                        (str(uuid.uuid4()), message_id, question["content"], _now()),
+                    )
             self.conn.commit()
         return True
 
@@ -307,8 +334,8 @@ class WorkspaceStore:
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO events (id, created_at, query, grounded, withheld, latency_ms, source_count, best_similarity, candidate_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO events (id, created_at, query, grounded, withheld, latency_ms, source_count, best_similarity, candidate_count, outcome)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -320,6 +347,7 @@ class WorkspaceStore:
                     int(fields.get("source_count") or 0),
                     fields.get("best_similarity"),
                     int(fields.get("candidate_count") or 0),
+                    fields.get("outcome") or "",
                 ),
             )
             self.conn.commit()
@@ -352,17 +380,20 @@ class WorkspaceStore:
                 """,
                 (since,),
             ).fetchall()
-            gaps = self.conn.execute(
-                """
-                SELECT query, COUNT(*) AS attempts, MAX(best_similarity) AS best_similarity
-                FROM events
-                WHERE created_at >= ? AND grounded = 0
-                GROUP BY query
-                ORDER BY attempts DESC
-                LIMIT 8
-                """,
-                (since,),
-            ).fetchall()
+            def gap_rows(outcome: str):
+                return self.conn.execute(
+                    """
+                    SELECT query, COUNT(*) AS attempts, MAX(best_similarity) AS best_similarity, ? AS outcome
+                    FROM events
+                    WHERE created_at >= ? AND outcome = ?
+                    GROUP BY query
+                    ORDER BY attempts DESC
+                    LIMIT 8
+                    """,
+                    (outcome, since, outcome),
+                ).fetchall()
+            no_coverage = gap_rows("no_coverage")
+            check_failed = gap_rows("check_failed")
         total = len(events)
         grounded = sum(1 for event in events if event["grounded"])
         withheld = sum(1 for event in events if event["withheld"])
@@ -391,9 +422,12 @@ class WorkspaceStore:
                     "query": row["query"],
                     "attempts": row["attempts"],
                     "best_similarity": row["best_similarity"],
+                    "outcome": row["outcome"],
                 }
-                for row in gaps
+                for row in list(no_coverage) + list(check_failed)
             ],
+            "gaps_no_coverage": [row["query"] for row in no_coverage],
+            "gaps_check_failed": [row["query"] for row in check_failed],
         }
 
     def start_job(self, filename: str) -> str:

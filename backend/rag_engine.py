@@ -1129,6 +1129,7 @@ def generate_answer_stream(
     require_citations: bool = True,
     citation_style: str = "Inline numbered",
     withhold_ungrounded: bool = True,
+    original_query: Optional[str] = None,
 ) -> Generator[str, None, None]:
     try:
         if not tokenize(query):
@@ -1211,6 +1212,12 @@ def generate_answer_stream(
             "retry_helped": retry_helped,
             "rerank_mode": mode,
             "confidence": confidence,
+            "original_query": original_query or query,
+            "candidate_ids": [item.get("chunk_id") for item in summary["ordered"]],
+            "scores": [
+                {"chunk_id": item.get("chunk_id"), "score": round(float(item.get("score") or 0), 4)}
+                for item in summary["ordered"]
+            ],
         }
         low_after_retry = retry_used and summary["top_score"] < RETRY_THRESHOLD
         abstain = summary["kept_count"] == 0 or low_after_retry or mode == "fused" and summary["kept_count"] == 0

@@ -473,6 +473,7 @@ async def chat(request: ChatRequest):
                 top_k=settings["top_k"],
                 similarity_threshold=settings["similarity_threshold"],
                 rrf_k=settings["rrf_k"],
+                original_query=query,
                 max_parents=settings["max_parents"],
                 exclude_document_ids=workspace.excluded_document_ids(),
                 answer_length=settings["answer_length"],
@@ -503,10 +504,18 @@ async def chat(request: ChatRequest):
         if sources:
             scores = [source.get("vector_similarity") for source in sources if source.get("vector_similarity") is not None]
             best = max(scores) if scores else None
+        kept_count = (trace or {}).get("kept_count")
+        if validation and validation.get("passed"):
+            outcome = "answered"
+        elif kept_count:
+            outcome = "check_failed"
+        else:
+            outcome = "no_coverage"
         workspace.record_event(
             query=query,
             grounded=bool(validation and validation.get("passed")),
             withheld=withheld or bool(failed),
+            outcome=outcome,
             latency_ms=int((time.perf_counter() - started) * 1000),
             source_count=len(sources),
             best_similarity=best,
