@@ -895,6 +895,7 @@ const settingFields = [
   ["setTopK", "top_k"],
   ["setSim", "similarity_threshold"],
   ["setParents", "max_parents"],
+  ["setRrf", "rrf_k"],
   ["setChunk", "chunking"],
 ];
 
@@ -944,9 +945,11 @@ function settingsPayload() {
     citation_style: form.citation_style || current.citation_style || "Inline numbered",
     require_citations: Boolean(form.require_citations),
     withhold_ungrounded: Boolean(form.withhold_ungrounded),
-    top_k: number("top_k", "Top-k candidates", 1, 50),
+    top_k: number("top_k", "Top-k candidates", 1, 100),
     similarity_threshold: number("similarity_threshold", "Similarity threshold", 0, 1),
     max_parents: number("max_parents", "Reranked context limit", 1, 12),
+    rrf_k: number("rrf_k", "Fusion constant", 1, 200),
+    contextual_embeddings: Boolean(form.contextual_embeddings),
     chunking: form.chunking || current.chunking || "Parent-child",
   };
 }
@@ -994,13 +997,16 @@ async function renderSettings() {
             </div>
           </section>
           <section class="panel settings-section" data-section="retrieval">
-            <div class="panel-head"><div><h2>Retrieval</h2><p>Used on the next question. Chunking applies to the next upload.</p></div></div>
+            <div class="panel-head"><div><h2>Retrieval</h2><p>Used on the next question. Heading-aware embeddings apply when you refresh the index.</p></div></div>
             <div class="form-block"><div class="field-grid">
-              <div class="field"><label for="setTopK">Top-k candidates</label><input id="setTopK" type="number" min="1" max="50" /></div>
+              <div class="field"><label for="setTopK">Top-k candidates</label><input id="setTopK" type="number" min="1" max="100" /></div>
               <div class="field"><label for="setSim">Similarity threshold</label><input id="setSim" type="number" min="0" max="1" step="0.01" /></div>
               <div class="field"><label for="setParents">Reranked context limit</label><input id="setParents" type="number" min="1" max="12" /></div>
+              <div class="field"><label for="setRrf">Fusion constant</label><input id="setRrf" type="number" min="1" max="200" /></div>
               <div class="field"><label for="setChunk">Chunking strategy</label><select id="setChunk">${optionList(["Parent-child", "Fixed window", "Index card summary"], state.form.chunking)}</select></div>
-            </div></div>
+            </div>
+            <div class="switch-row"><div><strong>Heading-aware embeddings</strong><p>Next index refresh embeds the section title with each passage</p></div>${switches("contextual_embeddings")}</div>
+            </div>
           </section>
           <section class="panel settings-section" data-section="members">
             <div class="panel-head"><div><h2>Members</h2><p>Local workspace directory</p></div><button class="btn small primary" id="inviteMember" type="button">Invite member</button></div>

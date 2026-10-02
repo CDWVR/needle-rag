@@ -5,7 +5,9 @@ so the gates can be tested without network or model downloads.
 """
 
 import re
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class NeedleError(Exception):
@@ -46,16 +48,78 @@ def filter_by_similarity(
     hits: List[Dict[str, Any]],
     *,
     absolute_threshold: float,
-    relative_floor: float,
 ) -> List[Dict[str, Any]]:
-    """Keep vector hits above an absolute cosine floor and a drop-off from the best hit."""
-    if not hits:
-        return []
-    top = max(float(hit["similarity"]) for hit in hits)
-    cutoff = max(absolute_threshold, top * relative_floor)
-    kept = [hit for hit in hits if float(hit["similarity"]) >= cutoff]
+    """Keep vector hits at or above one cosine floor. Jev judges the rest."""
+    kept = [hit for hit in hits if float(hit["similarity"]) >= absolute_threshold]
     kept.sort(key=lambda hit: float(hit["similarity"]), reverse=True)
     return kept
+
+
+def contextual_passage(header: str, raw_text: str, enabled: bool) -> str:
+    """Heading trail is part of the embedded string. The raw passage stays stored separately."""
+    raw = raw_text or ""
+    if not enabled:
+        return raw
+    title = (header or "").strip()
+    if not title:
+        return raw
+    return f"{title}\n{raw}"
+
+
+def normalize_query(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def needs_condense(prior_turns: List[Dict[str, Any]]) -> bool:
+    return any((turn.get("content") or "").strip() for turn in prior_turns)
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: List[List[Dict[str, Any]]],
+    *,
+    k: int,
+    key: str = "chunk_id",
+) -> List[Dict[str, Any]]:
+    """Merge ranked lists. Rank 1 is the first item. Higher fused score wins."""
+    fused: Dict[str, Dict[str, Any]] = {}
+    for ranked in ranked_lists:
+        for rank, item in enumerate(ranked, start=1):
+            item_id = item[key]
+            current = fused.get(item_id)
+            if current is None:
+                current = dict(item)
+                current["rrf_score"] = 0.0
+                fused[item_id] = current
+            elif current.get("similarity") is None and item.get("similarity") is not None:
+                current["similarity"] = item["similarity"]
+            current["rrf_score"] += 1.0 / (k + rank)
+    ordered = sorted(fused.values(), key=lambda item: float(item["rrf_score"]), reverse=True)
+    return ordered
+
+
+class ScoreCache:
+    """TTL cache keyed by the caller. Used for Jev scores."""
+
+    def __init__(self, ttl_seconds: float, clock: Callable[[], float] = time.monotonic):
+        self.ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._values: Dict[Tuple[Any, ...], Tuple[float, float]] = {}
+
+    def get(self, key: Tuple[Any, ...]) -> Optional[float]:
+        with self._lock:
+            found = self._values.get(key)
+            if not found:
+                return None
+            score, stored_at = found
+            if self._clock() - stored_at > self.ttl_seconds:
+                self._values.pop(key, None)
+                return None
+            return score
+
+    def put(self, key: Tuple[Any, ...], score: float) -> None:
+        with self._lock:
+            self._values[key] = (float(score), self._clock())
 
 
 def select_parents(scored_children: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:

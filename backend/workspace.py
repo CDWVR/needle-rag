@@ -20,9 +20,11 @@ DEFAULTS = {
     "citation_style": "Inline numbered",
     "require_citations": "true",
     "withhold_ungrounded": "true",
-    "top_k": "15",
+    "top_k": "30",
     "similarity_threshold": "0.30",
     "max_parents": "5",
+    "rrf_k": "60",
+    "contextual_embeddings": "true",
     "chunking": "Parent-child",
 }
 
@@ -107,6 +109,8 @@ class WorkspaceStore:
             );
             """
         )
+        self._ensure_column("messages", "original_query", "TEXT")
+        self._ensure_column("messages", "rewritten_query", "TEXT")
         for key, value in DEFAULTS.items():
             self.conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
         self.conn.execute(
@@ -114,6 +118,11 @@ class WorkspaceStore:
             (_now(),),
         )
         self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, declaration: str) -> None:
+        present = {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def settings(self) -> Dict[str, Any]:
         with self._lock:
@@ -131,9 +140,11 @@ class WorkspaceStore:
             "citation_style": raw.get("citation_style", "Inline numbered"),
             "require_citations": raw.get("require_citations", "true") == "true",
             "withhold_ungrounded": raw.get("withhold_ungrounded", "true") == "true",
-            "top_k": _bounded_int(raw.get("top_k"), 15, 1, 50),
+            "top_k": _bounded_int(raw.get("top_k"), 30, 1, 100),
             "similarity_threshold": _bounded_float(raw.get("similarity_threshold"), 0.30, 0, 1),
             "max_parents": _bounded_int(raw.get("max_parents"), 5, 1, 12),
+            "rrf_k": _bounded_int(raw.get("rrf_k"), 60, 1, 200),
+            "contextual_embeddings": raw.get("contextual_embeddings", "true") == "true",
             "chunking": raw.get("chunking", "Parent-child"),
         }
 
@@ -151,9 +162,11 @@ class WorkspaceStore:
             "citation_style": str(payload.get("citation_style", current["citation_style"])),
             "require_citations": "true" if payload.get("require_citations", current["require_citations"]) else "false",
             "withhold_ungrounded": "true" if payload.get("withhold_ungrounded", current["withhold_ungrounded"]) else "false",
-            "top_k": str(_bounded_int(payload.get("top_k"), current["top_k"], 1, 50)),
+            "top_k": str(_bounded_int(payload.get("top_k"), current["top_k"], 1, 100)),
             "similarity_threshold": f"{_bounded_float(payload.get('similarity_threshold'), current['similarity_threshold'], 0, 1):.2f}",
             "max_parents": str(_bounded_int(payload.get("max_parents"), current["max_parents"], 1, 12)),
+            "rrf_k": str(_bounded_int(payload.get("rrf_k"), current["rrf_k"], 1, 200)),
+            "contextual_embeddings": "true" if payload.get("contextual_embeddings", current["contextual_embeddings"]) else "false",
             "chunking": str(payload.get("chunking", current["chunking"])),
         }
         with self._lock:
@@ -237,14 +250,19 @@ class WorkspaceStore:
         sources: Optional[list] = None,
         validation: Optional[dict] = None,
         trace: Optional[dict] = None,
+        original_query: Optional[str] = None,
+        rewritten_query: Optional[str] = None,
     ) -> str:
         message_id = str(uuid.uuid4())
         now = _now()
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO messages (id, conversation_id, role, content, sources_json, validation_json, trace_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (
+                    id, conversation_id, role, content, sources_json, validation_json, trace_json,
+                    created_at, original_query, rewritten_query
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message_id,
@@ -255,6 +273,8 @@ class WorkspaceStore:
                     json.dumps(validation) if validation else None,
                     json.dumps(trace) if trace else None,
                     now,
+                    original_query,
+                    rewritten_query,
                 ),
             )
             if role == "user":

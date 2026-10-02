@@ -20,9 +20,11 @@ from rag_engine import (
     generate_answer_stream,
     get_all_documents,
     index_status,
+    condense_query,
     process_document,
     refresh_active_index,
 )
+from pipeline_logic import needs_condense
 from workspace import WorkspaceStore
 
 logging.basicConfig(level=logging.INFO)
@@ -67,9 +69,11 @@ class SettingsPayload(BaseModel):
     citation_style: str = "Inline numbered"
     require_citations: bool = True
     withhold_ungrounded: bool = True
-    top_k: int = 15
+    top_k: int = 30
     similarity_threshold: float = 0.30
     max_parents: int = 5
+    rrf_k: int = 60
+    contextual_embeddings: bool = True
     chunking: str = "Parent-child"
 
 
@@ -258,7 +262,8 @@ async def read_index():
 async def refresh_index():
     started = time.perf_counter()
     try:
-        status = refresh_active_index()
+        style = "contextual" if workspace.settings()["contextual_embeddings"] else "raw"
+        status = refresh_active_index(style)
     except NeedleError as exc:
         workspace.record_run("Version handoff", str(exc), "Failed")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -393,7 +398,16 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Question is too long.")
     settings = workspace.settings()
     conversation_id = workspace.ensure_conversation(request.conversation_id, query, request.document_id)
-    workspace.add_message(conversation_id, "user", query)
+    history = workspace.messages(conversation_id)
+    rewritten = None
+    search_query = query
+    if needs_condense(history):
+        try:
+            rewritten = condense_query(history, query)
+            search_query = rewritten or query
+        except NeedleError as exc:
+            log.warning("Query rewrite skipped: %s", exc)
+    workspace.add_message(conversation_id, "user", query, original_query=query, rewritten_query=rewritten)
     started = time.perf_counter()
 
     def event_stream():
@@ -406,10 +420,11 @@ async def chat(request: ChatRequest):
         yield f"data: {json.dumps({'type': 'conversation', 'id': conversation_id})}\n\n"
         try:
             for data in generate_answer_stream(
-                query=query,
+                query=search_query,
                 document_id=request.document_id,
                 top_k=settings["top_k"],
                 similarity_threshold=settings["similarity_threshold"],
+                rrf_k=settings["rrf_k"],
                 max_parents=settings["max_parents"],
                 exclude_document_ids=workspace.excluded_document_ids(),
                 answer_length=settings["answer_length"],

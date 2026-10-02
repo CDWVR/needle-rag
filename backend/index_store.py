@@ -44,7 +44,8 @@ class IndexStore:
                 collection_name TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                activated_at TEXT
+                activated_at TEXT,
+                embed_style TEXT NOT NULL DEFAULT 'raw'
             )
             """
         )
@@ -77,6 +78,9 @@ class IndexStore:
             )
             """
         )
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(index_registry)")}
+        if "embed_style" not in columns:
+            self.conn.execute("ALTER TABLE index_registry ADD COLUMN embed_style TEXT NOT NULL DEFAULT 'raw'")
         self.conn.commit()
 
     def close(self) -> None:
@@ -106,6 +110,7 @@ class IndexStore:
                 "status": "active",
                 "created_at": now,
                 "activated_at": now,
+                "embed_style": "raw",
             }
 
     def list_versions(self) -> List[Dict[str, Any]]:
@@ -115,15 +120,21 @@ class IndexStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def begin_version(self, version_id: str, embedding_model: str, collection_name: str) -> None:
+    def begin_version(
+        self,
+        version_id: str,
+        embedding_model: str,
+        collection_name: str,
+        embed_style: str = "raw",
+    ) -> None:
         with self._lock:
             self.conn.execute(
                 """
                 INSERT INTO index_registry
-                    (version_id, embedding_model, collection_name, status, created_at, activated_at)
-                VALUES (?, ?, ?, 'building', ?, NULL)
+                    (version_id, embedding_model, collection_name, status, created_at, activated_at, embed_style)
+                VALUES (?, ?, ?, 'building', ?, NULL, ?)
                 """,
-                (version_id, embedding_model, collection_name, _now()),
+                (version_id, embedding_model, collection_name, _now(), embed_style),
             )
             self.conn.commit()
 
@@ -225,7 +236,13 @@ class IndexStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def keyword_search(self, fts_query: str, limit: int, document_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def keyword_search(
+        self,
+        fts_query: str,
+        limit: int,
+        document_id: Optional[str] = None,
+        exclude_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         sql = """
             SELECT document_id, chunk_id, document_name, page_number, header_context, parent_text,
                    bm25(documents_fts) AS score
@@ -236,6 +253,10 @@ class IndexStore:
         if document_id:
             sql += " AND document_id = ?"
             params.append(document_id)
+        blocked = [item for item in (exclude_ids or []) if item]
+        if blocked:
+            sql += f" AND document_id NOT IN ({', '.join('?' for _ in blocked)})"
+            params.extend(blocked)
         sql += " ORDER BY score ASC LIMIT ?"
         params.append(limit)
         with self._lock:

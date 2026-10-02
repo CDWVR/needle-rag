@@ -32,8 +32,12 @@ from pipeline_logic import (
     JevUnavailable,
     NeedleError,
     NO_EVIDENCE_FALLBACK,
+    ScoreCache,
+    contextual_passage,
     filter_by_similarity,
     index_card,
+    normalize_query,
+    reciprocal_rank_fusion,
     select_parents,
     tokenize,
     validation_fallback,
@@ -50,15 +54,34 @@ JEV_ENDPOINT = os.getenv("JEV_ENDPOINT", "https://openrouter.ai/api/v1/systemone
 JEV_MODEL = os.getenv("JEV_MODEL", "typesafe/jev-1.13").strip()
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash").strip()
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 PARENT_CHUNK_SIZE = 2000
 PARENT_CHUNK_OVERLAP = 200
 CHILD_CHUNK_SIZE = 400
 CHILD_CHUNK_OVERLAP = 50
-TOP_K_CHILDREN = 15
-VECTOR_SIMILARITY_THRESHOLD = 0.30
-VECTOR_RELATIVE_FLOOR = 0.70
-JEV_RELEVANCE_THRESHOLD = 0.20
+TOP_K_CHILDREN = _env_int("NEEDLE_TOP_K", 30)
+VECTOR_SIMILARITY_THRESHOLD = _env_float("NEEDLE_SIMILARITY_THRESHOLD", 0.30)
+RRF_K = _env_int("NEEDLE_RRF_K", 60)
+JEV_RELEVANCE_THRESHOLD = _env_float("JEV_RELEVANCE_THRESHOLD", 0.20)
+JEV_MAX_CONCURRENCY = _env_int("JEV_MAX_CONCURRENCY", 4)
+JEV_CACHE_TTL_SECONDS = _env_float("JEV_CACHE_TTL_SECONDS", 3600)
+CONDENSE_MAX_TOKENS = _env_int("CONDENSE_MAX_TOKENS", 120)
+CONDENSE_HISTORY_TURNS = _env_int("CONDENSE_HISTORY_TURNS", 8)
 MAX_PARENTS = 5
+_jev_score_cache = ScoreCache(JEV_CACHE_TTL_SECONDS)
 
 STORE_DIR = os.path.join(os.path.dirname(__file__), "chroma_store")
 os.makedirs(STORE_DIR, exist_ok=True)
@@ -135,6 +158,8 @@ def index_status() -> Dict[str, Any]:
         "answer_model": OPENROUTER_MODEL,
         "similarity_threshold": VECTOR_SIMILARITY_THRESHOLD,
         "jev_relevance_threshold": JEV_RELEVANCE_THRESHOLD,
+        "rrf_k": RRF_K,
+        "embed_style": active.get("embed_style") or "raw",
         "index_status": active["status"],
     }
 
@@ -283,7 +308,14 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
             for metadata in metadatas:
                 metadata["version_id"] = current["version_id"]
             collection = _collection_for(current["collection_name"])
-            embeddings = _embed(texts)
+            use_context = (current.get("embed_style") or "raw") == "contextual"
+            for metadata, passage in zip(metadatas, texts):
+                metadata["raw_text"] = passage
+                metadata["embed_style"] = "contextual" if use_context else "raw"
+            embeddings = _embed([
+                contextual_passage(metadata.get("header_context") or "", passage, use_context)
+                for metadata, passage in zip(metadatas, texts)
+            ])
             for start in range(0, len(ids), 100):
                 collection.add(
                     ids=ids[start:start + 100],
@@ -339,13 +371,13 @@ def _delete_document(document_id: str) -> bool:
     return existed
 
 
-def refresh_active_index() -> Dict[str, Any]:
+def refresh_active_index(embed_style: str = "raw") -> Dict[str, Any]:
     """Copy the active index into a new collection, re-embed it, then publish."""
     with _mutation_lock:
-        return _refresh_active_index()
+        return _refresh_active_index(embed_style)
 
 
-def _refresh_active_index() -> Dict[str, Any]:
+def _refresh_active_index(embed_style: str) -> Dict[str, Any]:
     active = store.ensure_active_version(EMBEDDING_MODEL_ID)
     old = chroma_client.get_collection(active["collection_name"])
     payload = old.get(include=["documents", "metadatas"])
@@ -354,7 +386,8 @@ def _refresh_active_index() -> Dict[str, Any]:
     metadatas = list(payload.get("metadatas") or [])
     version_id = str(uuid.uuid4())
     collection_name = "needle_" + version_id.replace("-", "")[:12]
-    store.begin_version(version_id, EMBEDDING_MODEL_ID, collection_name)
+    style = embed_style if embed_style in {"raw", "contextual"} else "raw"
+    store.begin_version(version_id, EMBEDDING_MODEL_ID, collection_name, embed_style=style)
     created = False
     try:
         new_collection = chroma_client.get_or_create_collection(
@@ -362,13 +395,26 @@ def _refresh_active_index() -> Dict[str, Any]:
             metadata={"hnsw:space": "cosine"},
         )
         created = True
+        stored_documents: List[str] = []
+        stored_metadata: List[Dict[str, Any]] = []
+        embed_inputs: List[str] = []
+        contextual = style == "contextual"
+        for document, metadata in zip(documents, metadatas):
+            metadata = dict(metadata or {})
+            raw = metadata.get("raw_text") or document or ""
+            metadata["raw_text"] = raw
+            metadata["embed_style"] = style
+            metadata["version_id"] = version_id
+            stored_documents.append(raw)
+            stored_metadata.append(metadata)
+            embed_inputs.append(contextual_passage(metadata.get("header_context") or "", raw, contextual))
         if ids:
-            embeddings = _embed(documents)
+            embeddings = _embed(embed_inputs)
             for start in range(0, len(ids), 100):
                 new_collection.add(
                     ids=ids[start:start + 100],
-                    documents=documents[start:start + 100],
-                    metadatas=metadatas[start:start + 100],
+                    documents=stored_documents[start:start + 100],
+                    metadatas=stored_metadata[start:start + 100],
                     embeddings=embeddings[start:start + 100],
                 )
         if new_collection.count() != len(ids):
@@ -434,7 +480,7 @@ def _vector_candidates(
         hits.append(
             {
                 "chunk_id": chunk_id,
-                "text": passage or "",
+                "text": (metadata.get("raw_text") or passage or ""),
                 "parent_id": _parent_id(chunk_id, metadata),
                 "parent_text": metadata.get("parent_text") or "",
                 "document_id": metadata.get("document_id", ""),
@@ -446,17 +492,12 @@ def _vector_candidates(
                 "unit_type": metadata.get("unit_type") or "child",
             }
         )
-    return filter_by_similarity(
-        hits,
-        absolute_threshold=similarity_threshold,
-        relative_floor=VECTOR_RELATIVE_FLOOR,
-    )
+    return filter_by_similarity(hits, absolute_threshold=similarity_threshold)
 
 
 def _keyword_candidates(
     query: str,
     document_id: Optional[str],
-    seen: set,
     *,
     top_k: int,
     exclude_ids: Optional[List[str]] = None,
@@ -464,13 +505,10 @@ def _keyword_candidates(
     words = [token for token in tokenize(query) if len(token) > 2]
     if not words:
         return []
-    blocked = set(exclude_ids or [])
-    rows = store.keyword_search(" OR ".join(words), top_k, document_id)
+    rows = store.keyword_search(" OR ".join(words), top_k, document_id, exclude_ids=exclude_ids)
     extra = []
     for row in rows:
         chunk_id = row["chunk_id"]
-        if chunk_id in seen or row["document_id"] in blocked:
-            continue
         metadata = {
             "document_id": row["document_id"],
             "chunk_index": 0,
@@ -491,7 +529,6 @@ def _keyword_candidates(
                 "unit_type": "keyword",
             }
         )
-        seen.add(chunk_id)
     return extra
 
 
@@ -504,26 +541,81 @@ def _openrouter_key() -> str:
     return api_key
 
 
-def _rerank_with_jev(query: str, passages: List[str]) -> List[Dict[str, Any]]:
-    api_key = _openrouter_key()
+def condense_query(history: List[Dict[str, Any]], question: str) -> str:
+    """Rewrite a follow-up into a standalone search query. Caller skips this when history is empty."""
+    turns = history[-CONDENSE_HISTORY_TURNS:]
+    transcript = "\n".join(
+        f"{turn.get('role', 'user')}: {(turn.get('content') or '').strip()}"
+        for turn in turns
+        if (turn.get("content") or "").strip()
+    )
+    prompt = (
+        "Rewrite the latest question as one standalone search query. "
+        "Keep the names and limits from the conversation. "
+        "Return only the query.\n\n"
+        f"{transcript}\n\nLatest question:\n{question}"
+    )
+    rewritten = _openrouter_chat(
+        [{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=CONDENSE_MAX_TOKENS,
+    )
+    return " ".join(rewritten.split())[:500] or question
+
+
+def _jev_scores(query: str, passages: List[str]) -> List[float]:
+    if not passages:
+        return []
     try:
         from jev_reranker import JevReranker
     except ImportError as exc:
         raise JevUnavailable("The jev-reranker package is not installed.") from exc
     try:
         reranker = JevReranker(
-            api_key=api_key,
+            api_key=_openrouter_key(),
             model=JEV_MODEL,
             endpoint=JEV_ENDPOINT,
+            mode="pointwise",
+            max_concurrency=max(1, JEV_MAX_CONCURRENCY),
             dotenv_path=None,
         )
-        response = reranker.relevance_rerank(query, passages, threshold=JEV_RELEVANCE_THRESHOLD)
+        response = reranker.relevance_rerank(query, passages, threshold=0.0)
     except NeedleError:
         raise
     except Exception as exc:
         log.exception("Jev rerank failed")
         raise JevUnavailable("Jev could not rerank the retrieved passages.") from exc
-    return list(response.get("results") or [])
+    scores = [0.0] * len(passages)
+    for item in response.get("results") or []:
+        index = int(item.get("document_index", -1))
+        if 0 <= index < len(scores):
+            scores[index] = float(item.get("score") or 0)
+    return scores
+
+
+def _rerank_with_jev(query: str, candidates: List[Dict[str, Any]], version_id: str) -> List[Dict[str, Any]]:
+    normalized = normalize_query(query)
+    scores: Dict[int, float] = {}
+    misses: List[int] = []
+    for index, candidate in enumerate(candidates):
+        cached = _jev_score_cache.get((normalized, candidate["chunk_id"], version_id))
+        if cached is None:
+            misses.append(index)
+        else:
+            scores[index] = cached
+    if misses:
+        fresh = _jev_scores(query, [candidates[index]["text"] for index in misses])
+        for offset, score in enumerate(fresh):
+            original = misses[offset]
+            _jev_score_cache.put((normalized, candidates[original]["chunk_id"], version_id), score)
+            scores[original] = score
+    ranked = []
+    for index, score in scores.items():
+        if score < JEV_RELEVANCE_THRESHOLD:
+            continue
+        ranked.append({"document_index": index, "score": score})
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked
 
 
 def _load_parent(child: Dict[str, Any]) -> Dict[str, Any]:
@@ -743,6 +835,7 @@ def generate_answer_stream(
     *,
     top_k: int = TOP_K_CHILDREN,
     similarity_threshold: float = VECTOR_SIMILARITY_THRESHOLD,
+    rrf_k: int = RRF_K,
     max_parents: int = MAX_PARENTS,
     exclude_document_ids: Optional[List[str]] = None,
     answer_length: str = "Balanced",
@@ -756,6 +849,7 @@ def generate_answer_stream(
             return
 
         yield _event({"type": "status", "stage": "search", "message": "Searching the active index…"})
+        _collection, active_version = _active_collection()
         vector_hits = _vector_candidates(
             query,
             document_id,
@@ -763,15 +857,20 @@ def generate_answer_stream(
             similarity_threshold=similarity_threshold,
             exclude_ids=exclude_document_ids,
         )
-        seen = {hit["chunk_id"] for hit in vector_hits}
-        candidates = vector_hits + _keyword_candidates(
-            query, document_id, seen, top_k=top_k, exclude_ids=exclude_document_ids
+        keyword_hits = _keyword_candidates(
+            query,
+            document_id,
+            top_k=top_k,
+            exclude_ids=exclude_document_ids,
         )
+        candidates = reciprocal_rank_fusion([vector_hits, keyword_hits], k=rrf_k)
         trace = {
             "type": "trace",
             "candidates": len(candidates),
             "top_k": top_k,
             "similarity_threshold": similarity_threshold,
+            "rrf_k": rrf_k,
+            "retrieval_query": query,
         }
         if not candidates:
             yield _event({**trace, "kept": 0})
@@ -782,7 +881,7 @@ def generate_answer_stream(
             return
 
         yield _event({"type": "status", "stage": "rerank", "message": "Jev is reranking the passages…"})
-        ranked = _rerank_with_jev(query, [candidate["text"] for candidate in candidates])
+        ranked = _rerank_with_jev(query, candidates, active_version["version_id"])
         scored = []
         for item in ranked:
             index = int(item["document_index"])
