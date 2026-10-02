@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Needle — how the system works</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,620&family=Outfit:wght@380;500;640&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #171914;
+      --muted: #5e6358;
+      --paper: #f4f0e6;
+      --card: #fffdf8;
+      --line: #ddd6c6;
+      --moss: #1c4a38;
+      --moss-2: #e7f3ec;
+      --acid: #dff56a;
+      --clay: #c24b2e;
+      --clay-2: #fde8e2;
+      --blue: #243f8f;
+      --blue-2: #e7ecfb;
+      --gold: #8a6420;
+      --gold-2: #f8efd8;
+      --shadow: 0 18px 50px rgba(28, 32, 22, .08);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(900px 420px at 8% -10%, rgba(223,245,106,.45), transparent 60%),
+        radial-gradient(700px 380px at 100% 0%, rgba(36,63,143,.08), transparent 50%),
+        var(--paper);
+      font-family: Outfit, sans-serif;
+      font-size: 17px;
+      line-height: 1.55;
+    }
+    a { color: inherit; }
+    .wrap { width: min(1120px, calc(100% - 36px)); margin: 0 auto; }
+    header.top {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 22px 0 8px;
+    }
+    .brand { display: flex; gap: 10px; align-items: center; font-weight: 640; letter-spacing: -.02em; }
+    .mark {
+      width: 36px; height: 36px; border-radius: 11px; background: var(--ink); color: var(--acid);
+      display: grid; place-items: center; font-family: Fraunces, serif; font-size: 20px;
+    }
+    nav { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; }
+    nav a { text-decoration: none; color: var(--muted); }
+    nav a:hover { color: var(--ink); }
+    .hero { padding: 42px 0 18px; }
+    .kicker { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--moss); font-weight: 640; }
+    h1 {
+      font-family: Fraunces, serif; font-weight: 500; letter-spacing: -.04em;
+      font-size: clamp(42px, 6vw, 76px); line-height: .96; margin: 10px 0 16px; max-width: 14ch;
+    }
+    .lede { max-width: 62ch; font-size: 19px; color: #33382e; margin: 0; }
+    h2 {
+      font-family: Fraunces, serif; font-weight: 500; letter-spacing: -.03em;
+      font-size: clamp(30px, 4vw, 44px); line-height: 1.05; margin: 0 0 10px;
+    }
+    h3 { margin: 0 0 6px; font-size: 18px; font-weight: 640; }
+    section { padding: 36px 0 10px; }
+    .note { color: var(--muted); max-width: 68ch; }
+
+    .lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 28px; }
+    .lane { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px; box-shadow: var(--shadow); }
+    .lane header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+    .lane header span { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 640; }
+    .flow { display: grid; gap: 8px; }
+    .step {
+      display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: start;
+      background: #faf7f0; border-radius: 14px; padding: 10px 12px;
+    }
+    .n {
+      width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center;
+      font-family: Fraunces, serif; background: var(--ink); color: var(--acid);
+    }
+    .step p { margin: 0; color: var(--muted); font-size: 14.5px; }
+    .arrow { text-align: center; color: #a39b88; font-size: 18px; line-height: 1; }
+
+    .board {
+      margin-top: 22px; background: var(--ink); color: #f6f3ea; border-radius: 28px;
+      padding: 26px 22px 22px; box-shadow: var(--shadow);
+    }
+    .board h2 { color: white; }
+    .board .note { color: #c9c6ba; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 18px; }
+    .node {
+      background: #242820; border: 1px solid #3a4034; border-radius: 16px; padding: 14px 14px 12px; min-height: 118px;
+    }
+    .node strong { display: block; font-size: 16px; margin-bottom: 6px; }
+    .node span { color: #c8c4b6; font-size: 13.5px; display: block; }
+    .node.acid { background: var(--acid); color: var(--ink); border-color: transparent; }
+    .node.acid span { color: #3d4524; }
+    .node.clay { background: #3a241d; border-color: #6a3b2e; }
+    .tag { display: inline-block; margin-bottom: 8px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--acid); font-weight: 640; }
+    .node.acid .tag { color: var(--moss); }
+
+    .explain { display: grid; grid-template-columns: 220px 1fr; gap: 22px; margin: 22px 0; align-items: start; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; background: var(--moss-2); color: var(--moss); border-radius: 999px; padding: 6px 12px; font-size: 13px; font-weight: 640; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+    .card em { font-style: normal; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--gold); font-weight: 640; }
+    .card p { margin: 8px 0 0; color: #3d4338; font-size: 15px; }
+
+    .decision {
+      display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: center; margin-top: 16px;
+    }
+    .choice { border-radius: 18px; padding: 16px; min-height: 140px; }
+    .yes { background: var(--moss); color: white; }
+    .no { background: var(--clay); color: white; }
+    .choice p { margin: 8px 0 0; color: rgba(255,255,255,.88); font-size: 15px; }
+    .diamond {
+      width: 150px; height: 150px; background: var(--acid); color: var(--ink);
+      transform: rotate(45deg); display: grid; place-items: center; border-radius: 18px;
+    }
+    .diamond span { transform: rotate(-45deg); text-align: center; font-weight: 640; width: 110px; font-size: 14px; }
+
+    table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 18px; overflow: hidden; }
+    th, td { text-align: left; padding: 14px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 640; }
+    tr:last-child td { border-bottom: 0; }
+
+    .screens { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .screen { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+    .screen b { display: block; margin-bottom: 6px; }
+
+    footer { padding: 40px 0 56px; color: var(--muted); font-size: 14px; }
+    @media (max-width: 900px) {
+      .lanes, .grid, .cards, .screens, .decision, .explain { grid-template-columns: 1fr; }
+      .diamond { margin: 8px auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand"><div class="mark">N</div> Needle</div>
+      <nav>
+        <a href="#map">Map</a>
+        <a href="#upload">Upload</a>
+        <a href="#ask">Ask</a>
+        <a href="#check">Check</a>
+        <a href="#index">Index</a>
+        <a href="#stores">Storage</a>
+      </nav>
+    </header>
+
+    <div class="hero">
+      <div class="kicker">Architecture</div>
+      <h1>How a question becomes a cited answer.</h1>
+      <p class="lede">Embeddings stay on this machine. The passages themselves leave when Jev scores them, when the writer drafts an answer, and when a separate checker reads that draft. The dashed line on the map is that boundary.</p>
+    </div>
+
+    <section id="map">
+      <h2>The whole path</h2>
+      <p class="note">Three lanes. Ingest builds the library. Query reads it. Control decides whether a new index may go live, and whether a weak search gets one more try.</p>
+      <div class="board">
+        <svg viewBox="0 0 1080 620" role="img" aria-label="Swimlane of ingest, query, and control, with a dashed boundary around calls that leave this machine" style="width:100%;height:auto">
+          <rect x="8" y="8" width="1064" height="604" rx="18" fill="#171914"/>
+          <text x="28" y="48" fill="#dff56a" font-family="Outfit,sans-serif" font-size="14" letter-spacing="2">INGEST</text>
+          <text x="28" y="230" fill="#dff56a" font-family="Outfit,sans-serif" font-size="14" letter-spacing="2">QUERY</text>
+          <text x="28" y="470" fill="#dff56a" font-family="Outfit,sans-serif" font-size="14" letter-spacing="2">CONTROL</text>
+          <g font-family="Outfit,sans-serif" font-size="14" fill="#171914">
+            <rect x="120" y="24" width="150" height="64" rx="12" fill="#fffdf8"/><text x="140" y="52">File</text><text x="140" y="70" font-size="11">hash, then parse</text>
+            <rect x="300" y="24" width="160" height="64" rx="12" fill="#fffdf8"/><text x="318" y="52">Split</text><text x="318" y="70" font-size="11">parent and child</text>
+            <rect x="490" y="24" width="170" height="64" rx="12" fill="#e7f3ec"/><text x="508" y="52">Embed locally</text><text x="508" y="70" font-size="11">MiniLM, 384 dims</text>
+            <path d="M640 88 v28 h-250 v28" fill="none" stroke="#dff56a" stroke-width="2"/>
+            <rect x="280" y="144" width="90" height="46" rx="23" fill="#243f8f"/><text x="298" y="172" fill="#fffdf8">Chroma</text>
+            <rect x="390" y="144" width="90" height="46" rx="23" fill="#243f8f"/><text x="412" y="172" fill="#fffdf8">FTS5</text>
+            <rect x="500" y="144" width="110" height="46" rx="23" fill="#243f8f"/><text x="528" y="172" fill="#fffdf8">Parents</text>
+            <rect x="120" y="250" width="140" height="64" rx="12" fill="#fffdf8"/><text x="136" y="278">Question</text><text x="136" y="296" font-size="11">rewrite if follow-up</text>
+            <rect x="290" y="250" width="150" height="64" rx="12" fill="#fffdf8"/><text x="306" y="278">Hybrid search</text><text x="306" y="296" font-size="11">fuse ranks, k=60</text>
+            <rect x="640" y="220" width="400" height="210" rx="16" fill="none" stroke="#c24b2e" stroke-dasharray="7 6" stroke-width="2"/>
+            <text x="656" y="242" fill="#c24b2e" font-size="12">LEAVES THIS MACHINE · OPENROUTER</text>
+            <rect x="660" y="262" width="160" height="58" rx="12" fill="#dff56a"/><text x="678" y="286">Jev</text><text x="678" y="304" font-size="11">score passages</text>
+            <path d="M820 291 h40" stroke="#171914" stroke-width="2" fill="none"/>
+            <text x="830" y="284" font-size="11" fill="#fffdf8">if weak, one retry</text>
+            <path d="M820 310 C 900 360, 900 200, 740 250" fill="none" stroke="#dff56a" stroke-width="2"/>
+            <rect x="860" y="262" width="160" height="58" rx="12" fill="#fffdf8"/><text x="878" y="286">Writer</text><text x="878" y="304" font-size="11">cited draft</text>
+            <rect x="760" y="344" width="160" height="58" rx="12" fill="#fde8e2"/><text x="778" y="368">Checker</text><text x="778" y="386" font-size="11">separate model</text>
+            <rect x="120" y="500" width="180" height="64" rx="12" fill="#fffdf8"/><text x="136" y="528">Refresh</text><text x="136" y="546" font-size="11">copy or re-embed</text>
+            <rect x="330" y="500" width="190" height="64" rx="12" fill="#fffdf8"/><text x="346" y="528">Recall gate</text><text x="346" y="546" font-size="11">block a bad handoff</text>
+            <rect x="550" y="500" width="180" height="64" rx="12" fill="#fffdf8"/><text x="566" y="528">Rollback</text><text x="566" y="546" font-size="11">restore retired index</text>
+            <rect x="760" y="500" width="180" height="64" rx="12" fill="#fffdf8"/><text x="776" y="528">Delete</text><text x="776" y="546" font-size="11">tombstone, then erase</text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <section id="upload">
+      <h2>When you upload a file</h2>
+      <p class="note">Ingestion is the slow path, and it happens once per file. The goal is a library the question path can trust.</p>
+      <div class="lanes">
+        <div class="lane">
+          <header><span>What happens</span><strong>In order</strong></header>
+          <div class="flow">
+            <div class="step"><div class="n">1</div><div><h3>Check the file</h3><p>Only PDF, Word, text, slides, and spreadsheets. Empty files and anything over 50 MB are refused.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">2</div><div><h3>Read the text</h3><p>PDFs keep their page numbers. Other formats are converted to text. Files with no readable text are rejected.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">3</div><div><h3>Keep the headings</h3><p>Markdown headings become a trail such as “Safety &gt; Gloves,” so a citation knows which section it came from.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">4</div><div><h3>Split into parents and children</h3><p>A parent is about 2,000 characters: enough context to answer from. A child is about 400 characters: small enough to match precisely. Each parent also gets a short index card.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">5</div><div><h3>Embed and publish</h3><p>Children and index cards are written to the active vector index. The full parent text is stored beside it, not inside every vector. A run is logged: success or failure.</p></div></div>
+          </div>
+        </div>
+        <div class="lane">
+          <header><span>Why it is split this way</span><strong>Small for search. Large for reading.</strong></header>
+          <div class="cards" style="grid-template-columns: 1fr;">
+            <article class="card"><em>Child piece</em><p>Used to find the right spot. If we searched the whole chapter, the meaning would be too diluted.</p></article>
+            <article class="card"><em>Parent section</em><p>Shown to the model after a match. The model sees the paragraph around the hit, not a slice that ends mid-sentence.</p></article>
+            <article class="card"><em>Index card</em><p>A short heading-plus-lead summary, also searchable, for questions that match a title better than a sentence.</p></article>
+            <article class="card"><em>Chunking</em><p>The split style belongs to the index version. It changes on the next refresh, not on the next upload. Set CHUNKING_STRATEGY before refreshing.</p></article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ask">
+      <h2>When you ask a question</h2>
+      <p class="note">This is the path you feel in the chat. Status lines in the window follow these same stages: search, rerank, fetch, write, check.</p>
+      <div class="explain">
+        <div class="pill">About one question</div>
+        <p class="note" style="margin:0">The example we ran — “What is an attention mechanism?” — found 11 candidates, Jev kept 5 parents, and the check released a cited answer.</p>
+      </div>
+      <div class="cards">
+        <article class="card"><em>Search</em><h3>Embed, then fuse</h3><p>The question becomes 384 local numbers. The nearest passages and the best keyword hits are fused. Only the similarity floor drops vector hits. Default pool: 30.</p></article>
+        <article class="card"><em>Judge</em><h3>Jev, off this machine</h3><p>Each passage is sent to OpenRouter. Scores under 0.20 are dropped. If the best score is under 0.35, Needle rewrites the query once, widens the pool to 40, and tries again.</p></article>
+        <article class="card"><em>Write and check</em><h3>Two models</h3><p>The writer drafts from the parent sections. A different checker model then drops sentences that the passages do not support. Citations, quotes, and numbers are checked in code first.</p></article>
+      </div>
+    </section>
+
+    <section id="check">
+      <h2>The last check</h2>
+      <p class="note">A draft is not the same thing as an answer you are allowed to see. A second call reads the question, the passages, and the draft, then votes on three things.</p>
+      <div class="decision">
+        <div class="choice yes">
+          <h3>Show it</h3>
+          <p>Grounded, safe, and relevant. The answer is saved with its sources, and you can open each citation in the evidence panel.</p>
+        </div>
+        <div class="diamond"><span>Is it grounded, safe, and relevant?</span></div>
+        <div class="choice no">
+          <h3>Hold it back</h3>
+          <p>If the no-answer setting is on, you see a clear refusal instead of a guess. The attempt is still counted, so Analytics can show knowledge gaps.</p>
+        </div>
+      </div>
+      <div class="cards" style="margin-top:16px">
+        <article class="card"><em>Grounded</em><p>The factual claims are supported by the passages that were just retrieved.</p></article>
+        <article class="card"><em>Safe</em><p>The draft is not abusive, dangerous, or deceptive.</p></article>
+        <article class="card"><em>Relevant</em><p>It actually answers the question you asked.</p></article>
+      </div>
+    </section>
+
+    <section id="index">
+      <h2>Keeping the library consistent</h2>
+      <p class="note">Search always reads one published index. A refresh does not edit that index in place. It builds the next one, checks the copy, then swaps the pointer.</p>
+      <div class="lanes">
+        <div class="lane">
+          <header><span>Refresh</span><strong>Version handoff</strong></header>
+          <div class="flow">
+            <div class="step"><div class="n">1</div><div><h3>Build beside the live index</h3><p>A new collection is created and every passage is embedded again with the current model.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">2</div><div><h3>Count the copy</h3><p>If the new index does not contain the same number of pieces, the handoff is cancelled and the old index stays active.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">3</div><div><h3>Publish</h3><p>The registry flips the new version to active and retires the previous one. The top bar shows that version id.</p></div></div>
+          </div>
+        </div>
+        <div class="lane">
+          <header><span>Delete</span><strong>It leaves every copy</strong></header>
+          <div class="flow">
+            <div class="step"><div class="n">1</div><div><h3>Vectors</h3><p>The document is removed from every index version that is not already marked failed.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">2</div><div><h3>Words and parents</h3><p>Keyword rows and parent text are deleted, and the file is marked gone so it cannot reappear in the library list.</p></div></div>
+            <div class="arrow">↓</div>
+            <div class="step"><div class="n">3</div><div><h3>The original file</h3><p>If an original was stored, it is removed too. A run named “Deletion propagation” is written to the pipeline page.</p></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="stores">
+      <h2>Where things live</h2>
+      <p class="note">Five places, each with one job. None of them holds your OpenRouter key. That stays in the local <code>.env</code> file on the server.</p>
+      <table>
+        <thead><tr><th>Store</th><th>Holds</th><th>Used when</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Chroma</strong><br>backend/chroma_store</td><td>Vectors for children and index cards, plus small labels: document, page, section, parent id.</td><td>Finding pieces that mean the same thing as the question.</td></tr>
+          <tr><td><strong>SQLite keyword index</strong></td><td>The searchable wording of each piece, for exact matches.</td><td>Catching names, codes, and phrases vectors might rank too low.</td></tr>
+          <tr><td><strong>Parent table</strong></td><td>The longer section text, loaded only after Jev keeps a hit.</td><td>Giving the model enough context to answer.</td></tr>
+          <tr><td><strong>Workspace database</strong><br>backend/workspace.db</td><td>Settings, conversations, messages, feedback, analytics events, index runs, members, and per-file rules.</td><td>The screens: Ask, Knowledge, Pipeline, Analytics, Settings.</td></tr>
+          <tr><td><strong>Uploads folder</strong></td><td>The original file for documents added after this storage was turned on.</td><td>“Open original,” if downloads are allowed in Settings.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Trust boundary</h2>
+      <div class="cards">
+        <article class="card"><em>Stays here</em><h3>Files and vectors</h3><p>Originals, the vector index, the keyword index, and embeddings from all-MiniLM-L6-v2 stay on this machine.</p></article>
+        <article class="card"><em>Leaves · Jev</em><h3>Passage scores</h3><p>The question and each candidate passage are sent to OpenRouter so Jev can score usefulness. Default model: typesafe/jev-1.13.</p></article>
+        <article class="card"><em>Leaves · writer and checker</em><h3>Two different calls</h3><p>The writer receives the kept parent sections. The checker, CHECKER_MODEL, receives the draft and those same sections. They are not the same request.</p></article>
+      </div>
+    </section>
+
+    <footer>
+      Needle architecture, drawn from the running app. Numbers such as top-k 15, similarity 0.30, and Jev 0.20 are the defaults. Settings can change them for the next question.
+    </footer>
+  </div>
+</body>
+</html>
