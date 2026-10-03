@@ -802,5 +802,7 @@
       "defaults_changed": false
     },
     "quote_span": "Paraphrase unless quoting exactly; quote check normalizes whitespace/Unicode/quotes/hyphenation/ellipses"
-  }
+  },
+  "tag": "baseline-pre-pg",
+  "tag_commit_note": "Tag baseline-pre-pg points at the tip including this metadata; commit field is the substantive freeze."
 }
