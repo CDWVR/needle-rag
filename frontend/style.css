@@ -368,6 +368,10 @@
     .two-column { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .8fr); gap: 14px; }
     .stack { display: grid; gap: 14px; }
     .subtle-note { padding: 14px; background: var(--paper); color: var(--muted); border-radius: 10px; font-size: 10px; line-height: 1.5; }
+    .settings-drift-warning { margin: 0 0 14px; padding: 14px 16px; border: 1px solid #e2c48a; background: #fff8e8; border-radius: 10px; color: #5c4310; }
+    .settings-drift-warning strong { display: block; margin-bottom: 4px; font-size: 12px; }
+    .settings-drift-warning p { margin: 0; font-size: 12px; line-height: 1.45; color: #6a5220; }
+    .settings-drift-warning code { font: 11px 'DM Mono', monospace; }
 
     .pipeline-map { padding: 25px; min-height: 430px; background: var(--ink); color: white; position: relative; overflow: hidden; }
     .pipeline-map::before { content: ''; position: absolute; inset: 0; opacity: .13; background-image: radial-gradient(#b9beaf 1px, transparent 1px); background-size: 18px 18px; }

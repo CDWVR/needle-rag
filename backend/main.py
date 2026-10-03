@@ -18,6 +18,7 @@ from rag_engine import (
     NeedleError,
     delete_document,
     document_passages,
+    env_defaults,
     generate_answer_stream,
     get_all_documents,
     index_status,
@@ -162,16 +163,32 @@ async def health_check():
     return {"status": "healthy", "service": "Needle", **index_status()}
 
 
+def _settings_with_drift():
+    settings = workspace.settings()
+    defaults = env_defaults()
+    drift = {}
+    for key in ("top_k", "similarity_threshold", "rrf_k", "max_parents"):
+        saved = settings.get(key)
+        env_value = defaults.get(key)
+        if saved != env_value:
+            drift[key] = {"saved": saved, "env_default": env_value}
+    return {
+        **settings,
+        "env_defaults": defaults,
+        "settings_drift": drift,
+    }
+
+
 @app.get("/api/settings")
 async def read_settings():
-    return workspace.settings()
+    return _settings_with_drift()
 
 
 @app.put("/api/settings")
 async def write_settings(payload: SettingsPayload):
-    saved = workspace.save_settings(payload.model_dump())
+    workspace.save_settings(payload.model_dump())
     workspace.record_run("Settings updated", "Workspace preferences saved", "Success")
-    return saved
+    return _settings_with_drift()
 
 
 @app.get("/api/conversations")
@@ -261,8 +278,15 @@ async def read_index():
 
 
 @app.post("/api/index/refresh")
-async def refresh_index():
+async def refresh_index(publish_override: bool = False):
     started = time.perf_counter()
+    if publish_override:
+        workspace.record_run(
+            "Publish override",
+            "Explicit publish_override bypassed the minimum golden-set gate for this handoff.",
+            "Warning",
+        )
+        log.warning("Index refresh running with publish_override=true")
     try:
         settings = workspace.settings()
         style = "contextual" if settings["contextual_embeddings"] else "raw"
@@ -271,16 +295,27 @@ async def refresh_index():
             for doc_id, policy in workspace.policies().items()
             if policy.get("content_hash") and not policy.get("deleted")
         }
-        status = refresh_active_index(style, os.getenv("CHUNKING_STRATEGY", "Parent-child"), hashes)
+        status = refresh_active_index(
+            style,
+            os.getenv("CHUNKING_STRATEGY", "Parent-child"),
+            hashes,
+            publish_override=publish_override,
+        )
     except NeedleError as exc:
         workspace.record_run("Version handoff", str(exc), "Failed")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         log.exception("Index refresh failed")
-        workspace.record_run("Version handoff", "Refresh failed before publish", "Failed")
-        raise HTTPException(status_code=500, detail="Index refresh failed before the new version was published.") from exc
+        detail = str(exc) if "golden" in str(exc).lower() or "recall" in str(exc).lower() else (
+            "Index refresh failed before the new version was published."
+        )
+        workspace.record_run("Version handoff", detail, "Failed")
+        raise HTTPException(status_code=500, detail=detail) from exc
     elapsed = int((time.perf_counter() - started) * 1000)
-    workspace.record_run("Version handoff", f"Published {status['version_id']} in {elapsed} ms", "Success")
+    note = f"Published {status['version_id']} in {elapsed} ms"
+    if publish_override:
+        note += " (publish_override=true)"
+    workspace.record_run("Version handoff", note, "Success")
     return status
 
 

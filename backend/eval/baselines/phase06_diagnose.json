@@ -1,0 +1,154 @@
+{
+  "answerable": 45,
+  "histogram": {
+    "accepted": 28,
+    "checker_unparseable": 15,
+    "deterministic:quote_span": 2
+  },
+  "worst_examples": [
+    {
+      "id": "cand_d093eb085342",
+      "category": "deterministic:quote_span",
+      "question": "What is concatenated with the context vector before being passed through a Linear layer and softmax?",
+      "writer_passages": [
+        "Attention Mechanism\nEncoder hidden states\nDecoder hidden state at timestep t,\nAttention score/Alignment score:\nAttention Weights/Alignment Vector/Attention Distribution:\nAttention Output/Context Vector:\nNext, context vector and st are concatenated and passed\nthrough a Linear layer and softmax to produce ො𝑦<𝑡>",
+        "Attention Mechanism\nEncoder hidden states\nDecoder hidden state at timestep t,\nAttention score/Alignment score:\nAttention Weights/Alignment Vector/Attention Distribution:\nAttention Output/Context Vector:\nNext, context vector and st are concatenated and passed\nthrough a Linear layer and softmax to produce ො𝑦<𝑡>",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Attention Variants – Type 1\nIn some approaches, calculation of et involves st-1 instead of\nst\nIn this case, context vector ct is concatenated with\nEmbedding(xt) and used as input along with st-1 as hidden\nfor the RNN/GRU.\nRNN/GRU then produces st, which is then passed through a\nLinear layer and softmax to produce ො𝑦<𝑡>."
+      ],
+      "draft": "The documents describe two different things concatenated with the context vector, depending on the variant:\n\n- In the standard formulation, the context vector is concatenated with **s_t** (the decoder hidden state at timestep t) before being passed through a Linear layer and softmax to produce ŷ_<t> [1][2].\n- In \"Attention Variants – Type 1,\" the context vector **c_t** is instead concatenated with **Embedding(x_t)**, and that combined input is used along with **s_{t-1}** as the hidden state for the RNN/GRU; the resulting **s_t** is then passed through a Linear layer and softmax to produce ŷ_<t> [5].\n\nSo the answer is: either s_t (per [1][2]) or Embedding(x_t) (per [5]), depending on the variant.",
+      "checker_passages": [
+        "Attention Mechanism\nEncoder hidden states\nDecoder hidden state at timestep t,\nAttention score/Alignment score:\nAttention Weights/Alignment Vector/Attention Distribution:\nAttention Output/Context Vector:\nNext, context vector and st are concatenated and passed\nthrough a Linear layer and softmax to produce ො𝑦<𝑡>",
+        "Attention Mechanism\nEncoder hidden states\nDecoder hidden state at timestep t,\nAttention score/Alignment score:\nAttention Weights/Alignment Vector/Attention Distribution:\nAttention Output/Context Vector:\nNext, context vector and st are concatenated and passed\nthrough a Linear layer and softmax to produce ො𝑦<𝑡>",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Attention Variants – Type 1\nIn some approaches, calculation of et involves st-1 instead of\nst\nIn this case, context vector ct is concatenated with\nEmbedding(xt) and used as input along with st-1 as hidden\nfor the RNN/GRU.\nRNN/GRU then produces st, which is then passed through a\nLinear layer and softmax to produce ො𝑦<𝑡>."
+      ],
+      "raw_checker": "",
+      "reason": "A quotation in the answer is not in the cited passages.",
+      "final_decision": "rejected:deterministic:quote_span",
+      "deterministic_details": [
+        {
+          "kind": "quote_span",
+          "message": "A quotation in the answer is not in the cited passages.",
+          "offending": "Attention Variants – Type 1,",
+          "passage_text": "Attention Mechanism\nEncoder hidden states\nDecoder hidden state at timestep t,\nAttention score/Alignment score:\nAttention Weights/Alignment Vector/Attention Distribution:\nAttention Output/Context Vector:\nNext, context vector and st are concatenated and passed\nthrough a Linear layer and softmax to produce ො𝑦<𝑡>\nAttention Mechanism\nEncoder hidden states\nDecoder hidden state at timestep t,\nAttention score/Alignment score:\nAttention Weights/Alignment Vector/Attention Distribution:\nAttention Output/Context Vector:\nNext, context vector and st are concatenated and passed\nthrough a Linear layer and softmax to produce ො𝑦<𝑡>\nGlobal (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf\nGlobal (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf\nAttention Variants – Type 1\nIn some approaches, calculation of et involves st-1 instead of\nst\nIn this case, context vector ct is concatenated with\nEmbedding(xt) and used as input along with st-1 as hidden\nfor the RNN/GRU.\nRNN/GRU then produces st, which is then passed through a\nLinear layer and softmax to produce ො𝑦<𝑡>."
+        }
+      ],
+      "flagged": [],
+      "passages_identical": true
+    },
+    {
+      "id": "cand_3351a5105564",
+      "category": "deterministic:quote_span",
+      "question": "What are the two types of attention mentioned in the title?",
+      "writer_passages": [
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att."
+      ],
+      "draft": "The heading **“Global (Soft) vs Local Attention”** names **global (soft) attention** and **local attention** [1][2][3][4]. A separate heading, **“Soft vs Hard Attention,”** names **soft attention** and **hard attention** [5].",
+      "checker_passages": [
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att."
+      ],
+      "raw_checker": "",
+      "reason": "A quotation in the answer is not in the cited passages.",
+      "final_decision": "rejected:deterministic:quote_span",
+      "deterministic_details": [
+        {
+          "kind": "quote_span",
+          "message": "A quotation in the answer is not in the cited passages.",
+          "offending": "Soft vs Hard Attention,",
+          "passage_text": "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf\nGlobal (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf\nGlobal (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf\nGlobal (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf\nSoft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att."
+        }
+      ],
+      "flagged": [],
+      "passages_identical": true
+    },
+    {
+      "id": "cand_581df21ec702",
+      "category": "checker_unparseable",
+      "question": "What does the diagram in the source depict?",
+      "writer_passages": [
+        "Machine Translation\nNeural Machine Translation\nSource:https://www.adeveloperdiary.com/data-science/deep-learning/nlp/machine-\ntranslation-recurrent-neural-network-pytorch/\nNote: The above diagram depicts inference time behavior. Typically, we don’t start\nwith SOS in Encoder for this problem",
+        "Machine Translation\nNeural Machine Translation\nSource:https://www.adeveloperdiary.com/data-science/deep-learning/nlp/machine-\ntranslation-recurrent-neural-network-pytorch/\nNote: The above diagram depicts inference time behavior. Typically, we don’t start\nwith SOS in Encoder for this problem",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att.",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att.",
+        "Neural Machine Translation\nConditioning Bottleneck\nSource:\nhttps://www.adeveloperdiary.com/data-science/deep-learning/nlp/machine-\ntranslation-recurrent-neural-network-pytorch/\nNote: The above diagram depicts inference time behavior. Typically, we don’t start\nwith SOS in Encoder for this problem"
+      ],
+      "draft": "The diagram in the source depicts **inference time behavior** for neural machine translation. The passages also note that, typically, they **do not start with SOS in the Encoder** for this problem [1][2][5].",
+      "checker_passages": [
+        "Machine Translation\nNeural Machine Translation\nSource:https://www.adeveloperdiary.com/data-science/deep-learning/nlp/machine-\ntranslation-recurrent-neural-network-pytorch/\nNote: The above diagram depicts inference time behavior. Typically, we don’t start\nwith SOS in Encoder for this problem",
+        "Machine Translation\nNeural Machine Translation\nSource:https://www.adeveloperdiary.com/data-science/deep-learning/nlp/machine-\ntranslation-recurrent-neural-network-pytorch/\nNote: The above diagram depicts inference time behavior. Typically, we don’t start\nwith SOS in Encoder for this problem",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att.",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att.",
+        "Neural Machine Translation\nConditioning Bottleneck\nSource:\nhttps://www.adeveloperdiary.com/data-science/deep-learning/nlp/machine-\ntranslation-recurrent-neural-network-pytorch/\nNote: The above diagram depicts inference time behavior. Typically, we don’t start\nwith SOS in Encoder for this problem"
+      ],
+      "raw_checker": "{\n  \"grounded\": true,\n  \"safe\": true,\n  \"relevant\": true,\n  \"reason\": \"Both sentences are directly supported by passages [1], [2], and [5] which state the diagram depicts inference time behavior and that SOS is not used in the encoder.\",\n  \"uns",
+      "reason": "The answer check did not return a readable verdict.",
+      "final_decision": "rejected:checker_unparseable",
+      "deterministic_details": null,
+      "flagged": [],
+      "passages_identical": true
+    },
+    {
+      "id": "cand_b90fa48696dc",
+      "category": "checker_unparseable",
+      "question": "What are the two types of attention mentioned in the title?",
+      "writer_passages": [
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att."
+      ],
+      "draft": "The titles in the passages name two contrasting types of attention: **Global (Soft) attention** versus **Local attention** [1][3]. A later slide uses a different pairing, **Soft vs Hard Attention** [5].\n\nSo the two types referred to in the title \"Global (Soft) vs Local Attention\" are Global (Soft) attention and Local attention [1][3].",
+      "checker_passages": [
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att."
+      ],
+      "raw_checker": "",
+      "reason": "The answer check did not return a readable verdict.",
+      "final_decision": "rejected:checker_unparseable",
+      "deterministic_details": null,
+      "flagged": [],
+      "passages_identical": true
+    },
+    {
+      "id": "cand_ac1c14c856cd",
+      "category": "checker_unparseable",
+      "question": "Is the content of this presentation original?",
+      "writer_passages": [
+        "Disclaimer\nContent of this presentation is not original and it\nhas\nbeen\nprepared\nfrom\nvarious\nsources\nfor\nteaching purpose.",
+        "Disclaimer\nContent of this presentation is not original and it\nhas\nbeen\nprepared\nfrom\nvarious\nsources\nfor\nteaching purpose.",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att."
+      ],
+      "draft": "No. According to the disclaimer on page 10, the content of the presentation \"is not original and it has been prepared from various sources for teaching purpose\" [1][2]. The same disclaimer appears in both passages [1] and [2], which are duplicates of the same page.\n\nThe other passages list sources for specific slides (e.g., the paper on attention-based neural machine translation for the global vs. local attention slide [3][4], and the image captioning paper for the soft vs. hard attention slide [5]), which is consistent with the statement that the material was compiled from various sources rather than being original [1][2].",
+      "checker_passages": [
+        "Disclaimer\nContent of this presentation is not original and it\nhas\nbeen\nprepared\nfrom\nvarious\nsources\nfor\nteaching purpose.",
+        "Disclaimer\nContent of this presentation is not original and it\nhas\nbeen\nprepared\nfrom\nvarious\nsources\nfor\nteaching purpose.",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Global (Soft) vs Local Attention\nIn local attention, the model first generates an aligned\nposition pt for each target word at time t.\nThe context vector ct is then derived as a weighted average\nover the set of source hidden states within the window\n[pt−D, pt+D]; D is empirically selected.\nUnlike the global approach, the local alignment vector αt is\nnow\nfixed-dimensional,\ni.e.,\n∈\nR2D+1.\nWe\nconsider\ntwo\nvariants of the model as below.\nMonotonic alignment (local-m) – we simply set pt = t assuming\nthat source and target sequences are roughly monotonically\naligned.\nPredictive alignment (local-p) – instead of assuming monotonic\nalignments, our model predicts an aligned position.\nSource: Effective Approaches to Attention-based Neural Machine Translation,\nhttps://arxiv.org/pdf/1508.04025.pdf",
+        "Soft vs Hard Attention\nIn hard attention, stochastically selected/sampled, one\nposition of the encoder is attended at a time by the\ndecoder.\nSource: Show, Attend and Tell: Neural Image Caption Generation with Visual\nAttention, http://proceedings.mlr.press/v37/xuc15.pdf\nai can be considered as the hidden\nstate\nat\nith\ntime-step\n(actually,\nhidden vector representation of ith\npatch of an image) in encoder among\nL timesteps/patches. Ƹ𝑧𝑡is a context\nvector.\nHard Visual Att.\nSoft Visual Att."
+      ],
+      "raw_checker": "",
+      "reason": "The answer check did not return a readable verdict.",
+      "final_decision": "rejected:checker_unparseable",
+      "deterministic_details": null,
+      "flagged": [],
+      "passages_identical": true
+    }
+  ]
+}

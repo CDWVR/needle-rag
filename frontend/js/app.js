@@ -777,12 +777,21 @@ async function renderPipeline() {
   const [index, settings] = await Promise.all([api.index(), ensureSettings()]);
   state.index = index;
   state.settings = settings;
+  const drift = settings.settings_drift || {};
+  const driftKeys = Object.keys(drift);
+  const driftNote = driftKeys.length
+    ? `<div class="settings-drift-warning" role="status"><strong>Settings drift</strong><p>Saved workspace values override process env defaults for the next question. ${driftKeys.map((key) => {
+        const row = drift[key];
+        return `${key}: saved ${row.saved} vs NEEDLE/env ${row.env_default}`;
+      }).join(" · ")}. Phase 0.5 baselines use <code>backend/eval/baseline_config.json</code> (top_k=30) explicitly.</p></div>`
+    : "";
   $("#page-pipeline").innerHTML = `
     <div class="page-content">
       <header class="page-header">
         <div><div class="section-eyebrow">Index architecture</div><h1>Pipeline</h1><p>Ingestion, retrieval, Jev reranking, and the grounding check for the active index.</p></div>
         <div class="page-actions"><button class="btn" id="rollbackIndex" type="button">Roll back</button><button class="btn" id="reconcileIndex" type="button">Reconcile</button><button class="btn primary" id="refreshIndex" type="button">Refresh index</button></div>
       </header>
+      ${driftNote}
       <div class="stat-grid">
         <article class="stat-card"><span>Active version</span><div class="stat-value">${escapeHtml(String(index.version_id || "").slice(0, 8) || "—")}</div><small>${escapeHtml(index.embedding_model || "")} · ${index.embedding_dimensions ?? "—"} dims</small></article>
         <article class="stat-card accent"><span>Jev</span><div class="stat-value">${index.jev_circuit === "open" ? "Degraded" : index.jev_configured ? "Ready" : "Key"}</div><small>${escapeHtml(index.rerank_mode || index.jev_model || "")}</small></article>

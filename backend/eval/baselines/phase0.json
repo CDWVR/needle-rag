@@ -1,16 +1,806 @@
 {
-  "recorded_at": "2026-10-02T17:10:00Z",
+  "recorded_at": "2026-10-03T12:22:46.884142+00:00",
   "harness": "backend/eval/run_eval.py",
   "golden_file": "backend/eval/golden.jsonl",
-  "golden_questions": 0,
-  "recall_at_k": null,
-  "mrr": null,
-  "faithfulness": null,
-  "p95_latency_ms": null,
+  "config_file": "backend/eval/baseline_config.json",
+  "runs": [
+    {
+      "recorded_at": "2026-10-03T10:41:59.978902+00:00",
+      "settings": {
+        "config": {
+          "name": "phase0.5-baseline",
+          "notes": "Explicit harness config. Ignores workspace saved top_k (which may be 15 while NEEDLE_TOP_K defaults to 30).",
+          "k": 5,
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35,
+          "embed_style": "raw",
+          "chunking": "Parent-child",
+          "use_workspace_settings": false
+        },
+        "env_defaults": {
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35,
+          "answer_model": "deepseek/deepseek-v4.1-flash",
+          "checker_model": "deepseek/deepseek-v4-flash",
+          "jev_model": "typesafe/jev-1.13",
+          "chunking": "Parent-child",
+          "eval_min_golden": 30
+        },
+        "active_index": {
+          "version_id": "13ae98b8-6ec3-4483-99c0-dc9f1f33abb2",
+          "collection_name": "needle_13ae98b86ec3",
+          "embed_style": "raw",
+          "chunking": "Parent-child",
+          "embedding_model": "all-MiniLM-L6-v2"
+        },
+        "models": {
+          "answer_model": "deepseek/deepseek-v4.1-flash",
+          "checker_model": "deepseek/deepseek-v4-flash",
+          "jev_model": "typesafe/jev-1.13"
+        },
+        "thresholds": {
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35
+        }
+      },
+      "golden_questions": 100,
+      "with_jev": {
+        "mode": "jev",
+        "questions": 69,
+        "recall_at_k": 0.8406,
+        "mrr": 0.7662,
+        "latency": {
+          "condense": {
+            "p50_ms": 0.0,
+            "p95_ms": 5193.44,
+            "mean_ms": 852.04,
+            "n": 69
+          },
+          "retrieve": {
+            "p50_ms": 379.23,
+            "p95_ms": 441.58,
+            "mean_ms": 387.49,
+            "n": 69
+          },
+          "rerank": {
+            "p50_ms": 5028.09,
+            "p95_ms": 5536.18,
+            "mean_ms": 5423.05,
+            "n": 69
+          }
+        }
+      },
+      "recall_at_k": 0.8406,
+      "mrr": 0.7662,
+      "ablation": {
+        "with_jev": {
+          "mode": "jev",
+          "questions": 69,
+          "recall_at_k": 0.8406,
+          "mrr": 0.7662,
+          "latency": {
+            "condense": {
+              "p50_ms": 0.0,
+              "p95_ms": 5193.44,
+              "mean_ms": 852.04,
+              "n": 69
+            },
+            "retrieve": {
+              "p50_ms": 379.23,
+              "p95_ms": 441.58,
+              "mean_ms": 387.49,
+              "n": 69
+            },
+            "rerank": {
+              "p50_ms": 5028.09,
+              "p95_ms": 5536.18,
+              "mean_ms": 5423.05,
+              "n": 69
+            }
+          }
+        },
+        "fused_only": {
+          "mode": "fused",
+          "questions": 69,
+          "recall_at_k": 0.8406,
+          "mrr": 0.7397,
+          "latency": {
+            "condense": {
+              "p50_ms": 0.0,
+              "p95_ms": 2837.01,
+              "mean_ms": 630.94,
+              "n": 69
+            },
+            "retrieve": {
+              "p50_ms": 330.41,
+              "p95_ms": 385.56,
+              "mean_ms": 332.86,
+              "n": 69
+            },
+            "rerank": {
+              "p50_ms": 1.27,
+              "p95_ms": 1.94,
+              "mean_ms": 1.4,
+              "n": 69
+            }
+          }
+        }
+      },
+      "answer_quality": {
+        "faithfulness_grounded_rate": 0.8116,
+        "faithfulness_n": 69,
+        "abstention": {
+          "precision": 0.6486,
+          "recall": 0.7742,
+          "true_positives": 24,
+          "false_positives": 13,
+          "false_negatives": 7,
+          "true_negatives": 56
+        },
+        "unanswerable_n": 31,
+        "latency": {
+          "condense": {
+            "p50_ms": 0.0,
+            "p95_ms": 3313.6,
+            "mean_ms": 579.95,
+            "n": 100
+          },
+          "retrieve": {
+            "p50_ms": 384.54,
+            "p95_ms": 426.76,
+            "mean_ms": 387.15,
+            "n": 100
+          },
+          "rerank": {
+            "p50_ms": 5112.41,
+            "p95_ms": 5626.48,
+            "mean_ms": 4855.84,
+            "n": 100
+          },
+          "write": {
+            "p50_ms": 3772.22,
+            "p95_ms": 20031.69,
+            "mean_ms": 6114.19,
+            "n": 82
+          },
+          "check": {
+            "p50_ms": 5287.43,
+            "p95_ms": 13889.99,
+            "mean_ms": 6641.6,
+            "n": 82
+          }
+        },
+        "mean_cost_usd": 0.000289,
+        "total_cost_usd": 0.028919,
+        "token_calls": 190,
+        "prompt_tokens": 128186,
+        "completion_tokens": 59087
+      },
+      "faithfulness": 0.8116,
+      "abstention": {
+        "precision": 0.6486,
+        "recall": 0.7742,
+        "true_positives": 24,
+        "false_positives": 13,
+        "false_negatives": 7,
+        "true_negatives": 56
+      },
+      "p50_latency_ms": 3772.22,
+      "p95_latency_ms": 20031.69,
+      "mean_cost_usd": 0.000289,
+      "elapsed_s": 2302.68
+    },
+    {
+      "recorded_at": "2026-10-03T11:19:46.528837+00:00",
+      "settings": {
+        "config": {
+          "name": "phase0.5-baseline",
+          "notes": "Explicit harness config. Ignores workspace saved top_k (which may be 15 while NEEDLE_TOP_K defaults to 30).",
+          "k": 5,
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35,
+          "embed_style": "raw",
+          "chunking": "Parent-child",
+          "use_workspace_settings": false
+        },
+        "env_defaults": {
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35,
+          "answer_model": "deepseek/deepseek-v4.1-flash",
+          "checker_model": "deepseek/deepseek-v4-flash",
+          "jev_model": "typesafe/jev-1.13",
+          "chunking": "Parent-child",
+          "eval_min_golden": 30
+        },
+        "active_index": {
+          "version_id": "13ae98b8-6ec3-4483-99c0-dc9f1f33abb2",
+          "collection_name": "needle_13ae98b86ec3",
+          "embed_style": "raw",
+          "chunking": "Parent-child",
+          "embedding_model": "all-MiniLM-L6-v2"
+        },
+        "models": {
+          "answer_model": "deepseek/deepseek-v4.1-flash",
+          "checker_model": "deepseek/deepseek-v4-flash",
+          "jev_model": "typesafe/jev-1.13"
+        },
+        "thresholds": {
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35
+        }
+      },
+      "golden_questions": 100,
+      "with_jev": {
+        "mode": "jev",
+        "questions": 69,
+        "recall_at_k": 0.8406,
+        "mrr": 0.7498,
+        "latency": {
+          "condense": {
+            "p50_ms": 0.0,
+            "p95_ms": 3669.86,
+            "mean_ms": 779.53,
+            "n": 69
+          },
+          "retrieve": {
+            "p50_ms": 405.29,
+            "p95_ms": 460.91,
+            "mean_ms": 408.62,
+            "n": 69
+          },
+          "rerank": {
+            "p50_ms": 5080.37,
+            "p95_ms": 5488.42,
+            "mean_ms": 4952.16,
+            "n": 69
+          }
+        }
+      },
+      "recall_at_k": 0.8406,
+      "mrr": 0.7498,
+      "answer_quality": {
+        "faithfulness_grounded_rate": 0.7826,
+        "faithfulness_n": 69,
+        "abstention": {
+          "precision": 0.6429,
+          "recall": 0.871,
+          "true_positives": 27,
+          "false_positives": 15,
+          "false_negatives": 4,
+          "true_negatives": 54
+        },
+        "unanswerable_n": 31,
+        "latency": {
+          "condense": {
+            "p50_ms": 0.0,
+            "p95_ms": 3166.86,
+            "mean_ms": 619.31,
+            "n": 100
+          },
+          "retrieve": {
+            "p50_ms": 386.72,
+            "p95_ms": 451.35,
+            "mean_ms": 392.28,
+            "n": 100
+          },
+          "rerank": {
+            "p50_ms": 5068.88,
+            "p95_ms": 5632.81,
+            "mean_ms": 5174.2,
+            "n": 100
+          },
+          "write": {
+            "p50_ms": 3628.35,
+            "p95_ms": 14408.31,
+            "mean_ms": 5383.16,
+            "n": 82
+          },
+          "check": {
+            "p50_ms": 5000.47,
+            "p95_ms": 14089.17,
+            "mean_ms": 6112.48,
+            "n": 82
+          }
+        },
+        "mean_cost_usd": 0.00029,
+        "total_cost_usd": 0.029021,
+        "token_calls": 187,
+        "prompt_tokens": 125404,
+        "completion_tokens": 55274
+      },
+      "faithfulness": 0.7826,
+      "abstention": {
+        "precision": 0.6429,
+        "recall": 0.871,
+        "true_positives": 27,
+        "false_positives": 15,
+        "false_negatives": 4,
+        "true_negatives": 54
+      },
+      "p50_latency_ms": 3628.35,
+      "p95_latency_ms": 14408.31,
+      "mean_cost_usd": 0.00029,
+      "elapsed_s": 2100.5
+    },
+    {
+      "recorded_at": "2026-10-03T11:54:28.291843+00:00",
+      "settings": {
+        "config": {
+          "name": "phase0.5-baseline",
+          "notes": "Explicit harness config. Ignores workspace saved top_k (which may be 15 while NEEDLE_TOP_K defaults to 30).",
+          "k": 5,
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35,
+          "embed_style": "raw",
+          "chunking": "Parent-child",
+          "use_workspace_settings": false
+        },
+        "env_defaults": {
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35,
+          "answer_model": "deepseek/deepseek-v4.1-flash",
+          "checker_model": "deepseek/deepseek-v4-flash",
+          "jev_model": "typesafe/jev-1.13",
+          "chunking": "Parent-child",
+          "eval_min_golden": 30
+        },
+        "active_index": {
+          "version_id": "13ae98b8-6ec3-4483-99c0-dc9f1f33abb2",
+          "collection_name": "needle_13ae98b86ec3",
+          "embed_style": "raw",
+          "chunking": "Parent-child",
+          "embedding_model": "all-MiniLM-L6-v2"
+        },
+        "models": {
+          "answer_model": "deepseek/deepseek-v4.1-flash",
+          "checker_model": "deepseek/deepseek-v4-flash",
+          "jev_model": "typesafe/jev-1.13"
+        },
+        "thresholds": {
+          "top_k": 30,
+          "similarity_threshold": 0.3,
+          "rrf_k": 60,
+          "max_parents": 5,
+          "jev_relevance_threshold": 0.2,
+          "retry_threshold": 0.35
+        }
+      },
+      "golden_questions": 100,
+      "with_jev": {
+        "mode": "jev",
+        "questions": 69,
+        "recall_at_k": 0.8406,
+        "mrr": 0.7632,
+        "latency": {
+          "condense": {
+            "p50_ms": 0.0,
+            "p95_ms": 3149.43,
+            "mean_ms": 586.32,
+            "n": 69
+          },
+          "retrieve": {
+            "p50_ms": 394.44,
+            "p95_ms": 442.08,
+            "mean_ms": 396.79,
+            "n": 69
+          },
+          "rerank": {
+            "p50_ms": 5063.72,
+            "p95_ms": 5639.69,
+            "mean_ms": 4885.82,
+            "n": 69
+          }
+        }
+      },
+      "recall_at_k": 0.8406,
+      "mrr": 0.7632,
+      "answer_quality": {
+        "faithfulness_grounded_rate": 0.7391,
+        "faithfulness_n": 69,
+        "abstention": {
+          "precision": 0.617,
+          "recall": 0.9355,
+          "true_positives": 29,
+          "false_positives": 18,
+          "false_negatives": 2,
+          "true_negatives": 51
+        },
+        "unanswerable_n": 31,
+        "latency": {
+          "condense": {
+            "p50_ms": 0.0,
+            "p95_ms": 3087.29,
+            "mean_ms": 651.12,
+            "n": 100
+          },
+          "retrieve": {
+            "p50_ms": 400.19,
+            "p95_ms": 453.58,
+            "mean_ms": 400.06,
+            "n": 100
+          },
+          "rerank": {
+            "p50_ms": 5122.49,
+            "p95_ms": 5638.81,
+            "mean_ms": 5088.23,
+            "n": 100
+          },
+          "write": {
+            "p50_ms": 3254.03,
+            "p95_ms": 8855.49,
+            "mean_ms": 4221.79,
+            "n": 82
+          },
+          "check": {
+            "p50_ms": 5843.56,
+            "p95_ms": 22400.07,
+            "mean_ms": 7531.41,
+            "n": 82
+          }
+        },
+        "mean_cost_usd": 0.000289,
+        "total_cost_usd": 0.028935,
+        "token_calls": 183,
+        "prompt_tokens": 123424,
+        "completion_tokens": 51073
+      },
+      "faithfulness": 0.7391,
+      "abstention": {
+        "precision": 0.617,
+        "recall": 0.9355,
+        "true_positives": 29,
+        "false_positives": 18,
+        "false_negatives": 2,
+        "true_negatives": 51
+      },
+      "p50_latency_ms": 3254.03,
+      "p95_latency_ms": 22400.07,
+      "mean_cost_usd": 0.000289,
+      "elapsed_s": 2104.44
+    }
+  ],
+  "aggregate": {
+    "recall_at_k": {
+      "mean": 0.8406,
+      "min": 0.8406,
+      "max": 0.8406,
+      "spread": 0.0
+    },
+    "mrr": {
+      "mean": 0.7597,
+      "min": 0.7498,
+      "max": 0.7662,
+      "spread": 0.0164
+    },
+    "faithfulness": {
+      "mean": 0.7778,
+      "min": 0.7391,
+      "max": 0.8116,
+      "spread": 0.0725
+    },
+    "mean_cost_usd": {
+      "mean": 0.0003,
+      "min": 0.0003,
+      "max": 0.0003,
+      "spread": 0.0
+    },
+    "recall_at_5": {
+      "mean": 0.8406,
+      "min": 0.8406,
+      "max": 0.8406,
+      "spread": 0.0
+    },
+    "abstention_recall": {
+      "mean": 0.8602,
+      "min": 0.7742,
+      "max": 0.9355,
+      "spread": 0.1613
+    },
+    "abstention_precision": {
+      "mean": 0.6362,
+      "min": 0.617,
+      "max": 0.6486,
+      "spread": 0.0316
+    }
+  },
+  "settings": {
+    "config": {
+      "name": "phase0.5-baseline",
+      "notes": "Explicit harness config. Ignores workspace saved top_k (which may be 15 while NEEDLE_TOP_K defaults to 30).",
+      "k": 5,
+      "top_k": 30,
+      "similarity_threshold": 0.3,
+      "rrf_k": 60,
+      "max_parents": 5,
+      "jev_relevance_threshold": 0.2,
+      "retry_threshold": 0.35,
+      "embed_style": "raw",
+      "chunking": "Parent-child",
+      "use_workspace_settings": false
+    },
+    "env_defaults": {
+      "top_k": 30,
+      "similarity_threshold": 0.3,
+      "rrf_k": 60,
+      "max_parents": 5,
+      "jev_relevance_threshold": 0.2,
+      "retry_threshold": 0.35,
+      "answer_model": "deepseek/deepseek-v4.1-flash",
+      "checker_model": "deepseek/deepseek-v4-flash",
+      "jev_model": "typesafe/jev-1.13",
+      "chunking": "Parent-child",
+      "eval_min_golden": 30
+    },
+    "active_index": {
+      "version_id": "13ae98b8-6ec3-4483-99c0-dc9f1f33abb2",
+      "collection_name": "needle_13ae98b86ec3",
+      "embed_style": "raw",
+      "chunking": "Parent-child",
+      "embedding_model": "all-MiniLM-L6-v2"
+    },
+    "models": {
+      "answer_model": "deepseek/deepseek-v4.1-flash",
+      "checker_model": "deepseek/deepseek-v4-flash",
+      "jev_model": "typesafe/jev-1.13"
+    },
+    "thresholds": {
+      "top_k": 30,
+      "similarity_threshold": 0.3,
+      "rrf_k": 60,
+      "max_parents": 5,
+      "jev_relevance_threshold": 0.2,
+      "retry_threshold": 0.35
+    }
+  },
+  "golden_questions": 100,
+  "recall_at_k": {
+    "mean": 0.8406,
+    "min": 0.8406,
+    "max": 0.8406,
+    "spread": 0.0
+  },
+  "mrr": {
+    "mean": 0.7597,
+    "min": 0.7498,
+    "max": 0.7662,
+    "spread": 0.0164
+  },
+  "faithfulness": {
+    "mean": 0.7778,
+    "min": 0.7391,
+    "max": 0.8116,
+    "spread": 0.0725
+  },
+  "abstention": {
+    "recall": {
+      "mean": 0.8602,
+      "min": 0.7742,
+      "max": 0.9355,
+      "spread": 0.1613
+    },
+    "precision": {
+      "mean": 0.6362,
+      "min": 0.617,
+      "max": 0.6486,
+      "spread": 0.0316
+    }
+  },
+  "latency": {
+    "condense": {
+      "p50_ms": 0.0,
+      "p95_ms": 3313.6,
+      "mean_ms": 579.95,
+      "n": 100
+    },
+    "retrieve": {
+      "p50_ms": 384.54,
+      "p95_ms": 426.76,
+      "mean_ms": 387.15,
+      "n": 100
+    },
+    "rerank": {
+      "p50_ms": 5112.41,
+      "p95_ms": 5626.48,
+      "mean_ms": 4855.84,
+      "n": 100
+    },
+    "write": {
+      "p50_ms": 3772.22,
+      "p95_ms": 20031.69,
+      "mean_ms": 6114.19,
+      "n": 82
+    },
+    "check": {
+      "p50_ms": 5287.43,
+      "p95_ms": 13889.99,
+      "mean_ms": 6641.6,
+      "n": 82
+    }
+  },
+  "p95_latency_ms": 20031.69,
+  "mean_cost_usd": {
+    "mean": 0.0003,
+    "min": 0.0003,
+    "max": 0.0003,
+    "spread": 0.0
+  },
+  "ablation": {
+    "with_jev": {
+      "mode": "jev",
+      "questions": 69,
+      "recall_at_k": 0.8406,
+      "mrr": 0.7662,
+      "latency": {
+        "condense": {
+          "p50_ms": 0.0,
+          "p95_ms": 5193.44,
+          "mean_ms": 852.04,
+          "n": 69
+        },
+        "retrieve": {
+          "p50_ms": 379.23,
+          "p95_ms": 441.58,
+          "mean_ms": 387.49,
+          "n": 69
+        },
+        "rerank": {
+          "p50_ms": 5028.09,
+          "p95_ms": 5536.18,
+          "mean_ms": 5423.05,
+          "n": 69
+        }
+      }
+    },
+    "fused_only": {
+      "mode": "fused",
+      "questions": 69,
+      "recall_at_k": 0.8406,
+      "mrr": 0.7397,
+      "latency": {
+        "condense": {
+          "p50_ms": 0.0,
+          "p95_ms": 2837.01,
+          "mean_ms": 630.94,
+          "n": 69
+        },
+        "retrieve": {
+          "p50_ms": 330.41,
+          "p95_ms": 385.56,
+          "mean_ms": 332.86,
+          "n": 69
+        },
+        "rerank": {
+          "p50_ms": 1.27,
+          "p95_ms": 1.94,
+          "mean_ms": 1.4,
+          "n": 69
+        }
+      }
+    }
+  },
+  "jev_cache": {
+    "enabled": false,
+    "hits": 0,
+    "misses": 4428,
+    "hit_rate": 0.0
+  },
+  "cold_jev_rerank_latency": {
+    "p50_ms": 5028.09,
+    "p95_ms": 5536.18,
+    "mean_ms": 5423.05,
+    "n": 69
+  },
+  "contextual_delta": {
+    "error": "The answer model on OpenRouter did not return a draft.",
+    "published": false
+  },
+  "phase": "0.7-freeze",
   "notes": [
-    "The golden file is empty, so the harness exits before retrieval and cannot report recall, MRR, faithfulness, or latency.",
-    "Faithfulness is not computed by the harness even when a key is set; the script only prints that the checker would be used.",
-    "Ablation does not rerun retrieval without Jev.",
-    "Unit tests: 22 passed in 0.226s (process wall about 491ms)."
-  ]
+    "Phase 0.7 freeze: mean ± spread only (no best-of reporting).",
+    "Full 3-run faithfulness aggregates retained from prior cold-Jev harness (100 golden items).",
+    "Fresh 3x full-set + contextual 3x not re-executed: OpenRouter limit_remaining=0 after miss analysis and rerank sweep (limit=1.25, usage≈1.251).",
+    "Parity gate coded in backend/eval/parity.py (recall@5/30 and MRR within 0.02; top-5 id overlap ≥ 0.90).",
+    "Tag baseline-pre-pg marks this freeze; Postgres not started."
+  ],
+  "live_http_check": {
+    "n": 10,
+    "accepted": 8,
+    "accept_rate": 0.8,
+    "note": "Same _validate_answer as harness"
+  },
+  "diagnose_pre_fix": {
+    "histogram": {
+      "accepted": 28,
+      "checker_unparseable": 15,
+      "deterministic:quote_span": 2
+    },
+    "root_cause": "Checker prompt omitted grounded; parser treated missing grounded as False. Secondary: checker JSON truncated by max_tokens."
+  },
+  "commit": null,
+  "golden_sha256": "6426edc6b332484497c1264d2abfbcd803f291794339a73c6730dda61d0cc478",
+  "config_snapshot": {
+    "name": "phase0.5-baseline",
+    "notes": "Explicit harness config. Ignores workspace saved top_k (which may be 15 while NEEDLE_TOP_K defaults to 30).",
+    "k": 5,
+    "top_k": 30,
+    "similarity_threshold": 0.3,
+    "rrf_k": 60,
+    "max_parents": 5,
+    "jev_relevance_threshold": 0.2,
+    "retry_threshold": 0.35,
+    "embed_style": "raw",
+    "chunking": "Parent-child",
+    "use_workspace_settings": false
+  },
+  "model_slugs": {
+    "answer_model": "deepseek/deepseek-v4.1-flash",
+    "checker_model": "deepseek/deepseek-v4-flash",
+    "jev_model": "typesafe/jev-1.13"
+  },
+  "recall_at_5": {
+    "mean": 0.8406,
+    "min": 0.8406,
+    "max": 0.8406,
+    "spread": 0.0
+  },
+  "parity_gate": {
+    "module": "backend/eval/parity.py",
+    "metric_tolerance": 0.02,
+    "min_top5_overlap": 0.9,
+    "metrics": [
+      "recall_at_5",
+      "recall_at_30",
+      "mrr"
+    ],
+    "id_mapping": "content_hash + answer_span / parent text head"
+  },
+  "openrouter_at_freeze": {
+    "limit": 1.25,
+    "limit_remaining": 0.0,
+    "usage": 1.250726619,
+    "note": "Limit raised from 1.00 to 1.25; 0.7.2/0.7.3 consumed remaining budget. Fresh 3x full + contextual 3x blocked."
+  },
+  "phase07": {
+    "infra_error": "OpenRouter 403/429/5xx/timeout → infra_error; excluded from faithfulness/abstention; fail if share > 0.02",
+    "miss_analysis": "backend/eval/baselines/miss_analysis.json",
+    "rerank_sweep": "backend/eval/baselines/rerank_sweep.json",
+    "rerank_recommendation": {
+      "jev_candidate_limit": 15,
+      "concurrency": 4,
+      "defaults_changed": false
+    },
+    "quote_span": "Paraphrase unless quoting exactly; quote check normalizes whitespace/Unicode/quotes/hyphenation/ellipses"
+  }
 }

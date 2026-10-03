@@ -70,7 +70,7 @@
 |-----------|-----------|---------|
 | **Backend** | FastAPI | Async HTTP server with Background Tasks |
 | **Error Handling** | Exception Middleware | Graceful rejection of corrupted/encrypted files |
-| **LLM Synthesis** | OpenRouter (`google/gemini-2.5-flash` by default) | Cited draft and the grounding check |
+| **LLM Synthesis** | OpenRouter (`deepseek/deepseek-v4.1-flash` writer, `deepseek/deepseek-v4-flash` checker) | Cited draft and the grounding check |
 | **Reranker** | Jev `typesafe/jev-1.13` via OpenRouter | Keeps only passages that are useful evidence |
 | **Local Embeddings** | `all-MiniLM-L6-v2` | Open-source, CPU-optimized semantic vectors |
 | **Vector DB** | ChromaDB | Persistent vector similarity search |

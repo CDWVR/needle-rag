@@ -7,7 +7,7 @@ so the gates can be tested without network or model downloads.
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple  # Any used by violation details
 
 
 class NeedleError(Exception):
@@ -24,6 +24,39 @@ class JevUnavailable(NeedleError):
 
 class IncompatibleIndex(NeedleError):
     pass
+
+
+class InfraError(NeedleError):
+    """Upstream infra failure (OpenRouter 403/429/5xx/timeout). Not an abstention."""
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None, kind: str = "infra_error"):
+        super().__init__(message)
+        self.status_code = status_code
+        self.kind = kind
+
+
+def classify_http_infra_error(status_code: Optional[int], *, timeout: bool = False) -> Optional[str]:
+    if timeout:
+        return "timeout"
+    if status_code is None:
+        return None
+    if status_code == 403:
+        return "key_limit_or_forbidden"
+    if status_code == 429:
+        return "rate_limit"
+    if status_code >= 500:
+        return "upstream_5xx"
+    return None
+
+
+def infra_error_share(infra_count: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return float(infra_count) / float(total)
+
+
+def infra_errors_exceed_share(infra_count: int, total: int, *, max_share: float = 0.02) -> bool:
+    return infra_error_share(infra_count, total) > float(max_share) + 1e-12
 
 
 def tokenize(text: str) -> List[str]:
@@ -199,13 +232,58 @@ _INJECTION = (
 )
 
 
+def injection_match(text: str) -> Optional[str]:
+    for pattern in _INJECTION:
+        found = pattern.search(text or "")
+        if found:
+            return found.group(0)
+    return None
+
+
 def passage_looks_like_instructions(text: str) -> bool:
-    return any(pattern.search(text or "") for pattern in _INJECTION)
+    return injection_match(text) is not None
 
 
 def split_sentences(answer: str) -> List[str]:
     parts = re.split(r"(?<=[.!?])\s+", (answer or "").strip())
     return [part.strip() for part in parts if part.strip()]
+
+
+def normalize_match_text(text: str) -> str:
+    """Collapse whitespace and normalize Unicode, quotes, hyphenation, and ellipses."""
+    cleaned = (text or "").replace("\u00a0", " ").replace("\u2009", " ").replace("\u202f", " ")
+    cleaned = cleaned.replace("“", '"').replace("”", '"').replace("„", '"').replace("«", '"').replace("»", '"')
+    cleaned = cleaned.replace("‘", "'").replace("’", "'").replace("‚", "'")
+    cleaned = cleaned.replace("–", "-").replace("—", "-").replace("−", "-").replace("­", "")
+    cleaned = cleaned.replace("…", "...").replace("⋯", "...")
+    cleaned = cleaned.replace("％", "%").replace("﹪", "%")
+    cleaned = re.sub(r"\s*\.\.\.\s*", "...", cleaned)
+    cleaned = re.sub(r"\s*-\s*", "-", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def normalize_number_token(token: str) -> str:
+    value = (token or "").strip().replace(",", "").replace(" ", "")
+    value = value.rstrip("%").rstrip("٪")
+    if value.endswith(".0") and value.replace(".", "", 1).isdigit():
+        value = value[:-2]
+    return value
+
+
+def normalize_unsupported_indexes(raw_indexes: List[Any], sentence_count: int) -> List[int]:
+    """Accept 1-based indexes; if any 0 is present, treat the list as 0-based and convert."""
+    parsed: List[int] = []
+    for value in raw_indexes or []:
+        try:
+            parsed.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not parsed:
+        return []
+    if any(index == 0 for index in parsed):
+        parsed = [index + 1 for index in parsed]
+    return [index for index in parsed if 1 <= index <= max(0, sentence_count)]
 
 
 def kept_sentences(answer: str, unsupported_indexes: List[int], *, minimum_chars: int) -> Dict[str, Any]:
@@ -217,31 +295,97 @@ def kept_sentences(answer: str, unsupported_indexes: List[int], *, minimum_chars
         "text": text,
         "partially_supported": bool(sentences) and len(kept) < len(sentences) and bool(kept),
         "enough": len(text) >= minimum_chars,
+        "kept_count": len(kept),
+        "sentence_count": len(sentences),
     }
+
+
+def corpus_contains_span(corpus: str, span: str) -> bool:
+    if not span:
+        return True
+    if span in corpus:
+        return True
+    return normalize_match_text(span) in normalize_match_text(corpus)
+
+
+def corpus_contains_number(corpus: str, number: str) -> bool:
+    if not number:
+        return True
+    if number in corpus:
+        return True
+    plain = normalize_number_token(number)
+    if plain and plain in corpus.replace(",", "").replace(" ", ""):
+        return True
+    normalized_corpus = normalize_match_text(corpus).replace(",", "")
+    return bool(plain) and plain in normalized_corpus.replace(" ", "")
+
+
+def deterministic_violation_details(
+    answer: str,
+    contexts: List[Dict[str, Any]],
+    *,
+    min_quote_chars: int,
+) -> List[Dict[str, Any]]:
+    """Structured fail-closed checks for citations, quotations, and numbers."""
+    details: List[Dict[str, Any]] = []
+    limit = len(contexts)
+    # Strip citation markers before number scans so [12] is not treated as the number 12.
+    answer_without_citations = re.sub(r"\[(\d+)\]", " ", answer or "")
+    cited = [int(number) for number in re.findall(r"\[(\d+)\]", answer or "")]
+    for number in cited:
+        if number < 1 or number > limit:
+            details.append(
+                {
+                    "kind": "citation_index",
+                    "message": f"Citation [{number}] does not match a retrieved passage.",
+                    "offending": f"[{number}]",
+                    "passage_text": "\n".join(
+                        f"[{index}] {(context.get('text') or '')[:240]}"
+                        for index, context in enumerate(contexts, start=1)
+                    ),
+                }
+            )
+    corpus = "\n".join(str(context.get("text") or "") for context in contexts)
+    for quote in re.findall(r"[\"“](.{8,}?)[\"”]", answer or "", flags=re.S):
+        snippet = quote.strip().strip(".,;:")
+        if len(snippet) >= min_quote_chars and not corpus_contains_span(corpus, snippet):
+            details.append(
+                {
+                    "kind": "quote_span",
+                    "message": "A quotation in the answer is not in the cited passages.",
+                    "offending": snippet,
+                    "passage_text": corpus,
+                }
+            )
+            break
+    # Also ignore bare page markers the writer often copies from the prompt header.
+    answer_for_numbers = re.sub(r"\bpage\s+\d+\b", " ", answer_without_citations, flags=re.I)
+    for number in re.findall(r"\d[\d,]*(?:\.\d+)?%?", answer_for_numbers):
+        if re.fullmatch(r"\d%?", number):
+            continue
+        if not corpus_contains_number(corpus, number):
+            details.append(
+                {
+                    "kind": "number",
+                    "message": f"The number {number} is not in the cited passages.",
+                    "offending": number,
+                    "passage_text": corpus,
+                }
+            )
+            break
+    return details
 
 
 def deterministic_violations(answer: str, contexts: List[Dict[str, Any]], *, min_quote_chars: int) -> List[str]:
     """Fail closed when citations, quotations, or numbers are not in the cited text."""
-    problems = []
-    cited = [int(number) for number in re.findall(r"\[(\d+)\]", answer or "")]
-    limit = len(contexts)
-    for number in cited:
-        if number < 1 or number > limit:
-            problems.append(f"Citation [{number}] does not match a retrieved passage.")
-    corpus = "\n".join(str(context.get("text") or "") for context in contexts)
-    for quote in re.findall(r"[\"“](.{8,}?)[\"”]", answer or "", flags=re.S):
-        snippet = quote.strip()
-        if len(snippet) >= min_quote_chars and snippet not in corpus:
-            problems.append("A quotation in the answer is not in the cited passages.")
-            break
-    for number in re.findall(r"\d[\d,]*(?:\.\d+)?", answer or ""):
-        if re.fullmatch(r"\d", number):
-            continue
-        plain = number.replace(",", "")
-        if number not in corpus and plain not in corpus:
-            problems.append(f"The number {number} is not in the cited passages.")
-            break
-    return problems
+    return [item["message"] for item in deterministic_violation_details(answer, contexts, min_quote_chars=min_quote_chars)]
+
+
+def assert_identical_passages(writer_passages: List[Dict[str, Any]], checker_passages: List[Dict[str, Any]]) -> None:
+    writer_texts = [str(item.get("text") or "") for item in writer_passages]
+    checker_texts = [str(item.get("text") or "") for item in checker_passages]
+    if writer_texts != checker_texts:
+        raise AssertionError("Writer and checker passages are not byte-identical for the same request.")
 
 
 def recall_at_k(retrieved_ids: List[str], expected_ids: List[str], k: int) -> float:
@@ -252,7 +396,18 @@ def recall_at_k(retrieved_ids: List[str], expected_ids: List[str], k: int) -> fl
     return len(found.intersection(expected)) / len(set(expected))
 
 
-def publish_allowed(old_recall: float, new_recall: float, margin: float) -> bool:
+def publish_allowed(
+    old_recall: float,
+    new_recall: float,
+    margin: float,
+    *,
+    golden_count: int = 0,
+    min_golden: int = 30,
+    override: bool = False,
+) -> bool:
+    """Fail closed when the golden set is too small, unless an explicit override is set."""
+    if int(golden_count) < int(min_golden) and not override:
+        return False
     return new_recall + 1e-9 >= old_recall - margin
 
 
