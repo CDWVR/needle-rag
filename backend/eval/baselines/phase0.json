@@ -748,7 +748,7 @@
     },
     "root_cause": "Checker prompt omitted grounded; parser treated missing grounded as False. Secondary: checker JSON truncated by max_tokens."
   },
-  "commit": null,
+  "commit": "f60ff07af917fd88f066a00fe527b1ca3e39a99d",
   "golden_sha256": "6426edc6b332484497c1264d2abfbcd803f291794339a73c6730dda61d0cc478",
   "config_snapshot": {
     "name": "phase0.5-baseline",
