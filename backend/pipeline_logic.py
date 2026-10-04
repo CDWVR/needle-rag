@@ -7,7 +7,7 @@ so the gates can be tested without network or model downloads.
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple  # Any used by violation details
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple  # Any used by violation details
 
 
 class NeedleError(Exception):
@@ -222,6 +222,163 @@ def select_parents(scored_children: List[Dict[str, Any]], limit: int) -> List[Di
             best[parent_id] = child
     ordered = sorted(best.values(), key=lambda item: float(item["jev_score"]), reverse=True)
     return ordered[:limit]
+
+
+RETRIEVAL_RERANK_MODES = ("jev_filter", "fused_only", "jev_soft")
+
+
+def soft_rrf_ranks(
+    fused_ranks: Dict[str, int],
+    jev_ranks: Dict[str, int],
+    *,
+    k: int = 60,
+) -> List[Tuple[str, float]]:
+    """RRF blend of fused and Jev ranks. Higher score is better."""
+    ids = set(fused_ranks) | set(jev_ranks)
+    scored = []
+    for item_id in ids:
+        fused_rank = fused_ranks.get(item_id)
+        jev_rank = jev_ranks.get(item_id)
+        score = 0.0
+        if fused_rank is not None:
+            score += 1.0 / (k + fused_rank)
+        if jev_rank is not None:
+            score += 1.0 / (k + jev_rank)
+        scored.append((item_id, score))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    return scored
+
+
+def rare_exact_tokens(question: str, *, min_len: int = 5) -> List[str]:
+    """Question tokens long enough to act as exact-term guards."""
+    stop = {
+        "about", "these", "those", "where", "which", "their", "there", "using", "based",
+        "what", "when", "does", "with", "from", "that", "this", "have", "been",
+    }
+    tokens = tokenize(question)
+    return [token for token in tokens if len(token) >= min_len and token not in stop]
+
+
+def chunk_has_exact_term(text: str, terms: Sequence[str]) -> bool:
+    hay = (text or "").lower()
+    return any(term in hay for term in terms)
+
+
+def apply_retrieval_policy(
+    fused_children: List[Dict[str, Any]],
+    jev_scores_by_id: Dict[str, Optional[float]],
+    *,
+    policy: str,
+    jev_threshold: float = 0.20,
+    rrf_k: int = 60,
+    top_n: int = 5,
+    question: str = "",
+    id_key: str = "chunk_id",
+) -> Dict[str, Any]:
+    """Offline policies A–D over fused candidates + optional Jev scores.
+
+    Missing Jev scores are reported; they are never fabricated.
+    """
+    fused = list(fused_children)
+    fused_ranks = {item[id_key]: index for index, item in enumerate(fused, start=1)}
+    missing = [item[id_key] for item in fused if jev_scores_by_id.get(item[id_key]) is None]
+    present = {
+        item_id: float(score)
+        for item_id, score in jev_scores_by_id.items()
+        if score is not None and item_id in fused_ranks
+    }
+    by_id = {item[id_key]: item for item in fused}
+    terms = rare_exact_tokens(question)
+
+    if policy in ("fused_only", "E"):
+        ordered_ids = [item[id_key] for item in fused]
+        kept_ids = ordered_ids[:top_n]
+        return {
+            "policy": policy,
+            "ordered_ids": ordered_ids,
+            "kept_ids": kept_ids,
+            "missing_jev": missing,
+            "scores": {item_id: float(by_id[item_id].get("rrf_score") or 0) for item_id in ordered_ids},
+        }
+
+    if policy == "A":
+        # Hard drop below Jev threshold; order by Jev score.
+        scored = sorted(present.items(), key=lambda item: item[1], reverse=True)
+        kept_ids = [item_id for item_id, score in scored if score >= jev_threshold][:top_n]
+        ordered_ids = [item_id for item_id, _score in scored] + [
+            item_id for item_id in fused_ranks if item_id not in present
+        ]
+        return {
+            "policy": "A",
+            "ordered_ids": ordered_ids,
+            "kept_ids": kept_ids,
+            "missing_jev": missing,
+            "scores": dict(present),
+        }
+
+    jev_ranks = {
+        item_id: rank
+        for rank, (item_id, _score) in enumerate(
+            sorted(present.items(), key=lambda item: item[1], reverse=True),
+            start=1,
+        )
+    }
+    # Unscored items keep a weak fused-only contribution via soft RRF without a Jev term.
+    blended = soft_rrf_ranks(fused_ranks, jev_ranks, k=rrf_k)
+    ordered_ids = [item_id for item_id, _score in blended]
+
+    if policy == "B":
+        kept_ids = ordered_ids[:top_n]
+    elif policy == "C":
+        protected = [item[id_key] for item in fused[:3]]
+        rest = [
+            item_id
+            for item_id in ordered_ids
+            if item_id not in protected and present.get(item_id, 0.0) >= jev_threshold
+        ]
+        # Protect top-3 fused regardless of Jev; fill from thresholded rest then blend order.
+        kept_ids = []
+        for item_id in protected + rest + ordered_ids:
+            if item_id not in kept_ids:
+                kept_ids.append(item_id)
+            if len(kept_ids) >= top_n:
+                break
+    elif policy == "D":
+        # Soft RRF order, but exact-term hits are never dropped from the candidate pool
+        # before taking top_n (they are boosted to stay eligible).
+        guarded = {
+            item_id
+            for item_id in ordered_ids
+            if chunk_has_exact_term(by_id[item_id].get("text") or "", terms)
+        }
+        # Re-order: keep soft order but ensure guarded items among top fused that match
+        # are not excluded — since B already keeps without drops, D equals B plus
+        # forcing guarded fused hits into the top_n window if missing.
+        kept_ids = list(ordered_ids[:top_n])
+        for item_id in ordered_ids:
+            if item_id in guarded and item_id not in kept_ids:
+                # Replace the lowest soft hit if needed.
+                if len(kept_ids) >= top_n:
+                    kept_ids[-1] = item_id
+                else:
+                    kept_ids.append(item_id)
+                break
+        # Stable unique
+        deduped = []
+        for item_id in kept_ids:
+            if item_id not in deduped:
+                deduped.append(item_id)
+        kept_ids = deduped[:top_n]
+    else:
+        raise ValueError(f"Unknown retrieval policy {policy!r}")
+
+    return {
+        "policy": policy,
+        "ordered_ids": ordered_ids,
+        "kept_ids": kept_ids,
+        "missing_jev": missing,
+        "scores": {item_id: score for item_id, score in blended},
+    }
 
 
 _INJECTION = (

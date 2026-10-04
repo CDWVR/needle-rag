@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 def recall_at_k(retrieved_ids: Sequence[str], expected_ids: Sequence[str], k: int) -> float:
@@ -106,3 +106,92 @@ def mean_spread(values: Sequence[float]) -> Dict[str, float]:
         "max": round(max(numbers), 4),
         "spread": round(max(numbers) - min(numbers), 4),
     }
+
+
+def bootstrap_ci(
+    values: Sequence[float],
+    *,
+    n_resamples: int = 1000,
+    alpha: float = 0.05,
+    seed: int = 13,
+) -> Dict[str, float]:
+    """Percentile bootstrap 95% CI for the mean of `values`."""
+    import random
+
+    numbers = [float(value) for value in values]
+    if not numbers:
+        return {"mean": 0.0, "low": 0.0, "high": 0.0, "n": 0}
+    rng = random.Random(seed)
+    means = []
+    n = len(numbers)
+    for _ in range(max(1, n_resamples)):
+        sample = [numbers[rng.randrange(n)] for _ in range(n)]
+        means.append(sum(sample) / n)
+    means.sort()
+    low_i = int((alpha / 2) * (len(means) - 1))
+    high_i = int((1 - alpha / 2) * (len(means) - 1))
+    mean = sum(numbers) / n
+    return {
+        "mean": round(mean, 4),
+        "low": round(means[low_i], 4),
+        "high": round(means[high_i], 4),
+        "n": n,
+    }
+
+
+def bootstrap_diff_ci(
+    left: Sequence[float],
+    right: Sequence[float],
+    *,
+    n_resamples: int = 1000,
+    alpha: float = 0.05,
+    seed: int = 13,
+) -> Dict[str, Any]:
+    """Bootstrap CI for mean(left) - mean(right). Flags when 0 is inside the interval."""
+    import random
+
+    a = [float(value) for value in left]
+    b = [float(value) for value in right]
+    if not a or not b or len(a) != len(b):
+        # Pairwise when same length; otherwise compare independent means on min length.
+        n = min(len(a), len(b))
+        a, b = a[:n], b[:n]
+    if not a:
+        return {"diff": 0.0, "low": 0.0, "high": 0.0, "within_noise": True, "n": 0}
+    rng = random.Random(seed)
+    diffs = []
+    n = len(a)
+    for _ in range(max(1, n_resamples)):
+        idx = [rng.randrange(n) for _ in range(n)]
+        left_mean = sum(a[i] for i in idx) / n
+        right_mean = sum(b[i] for i in idx) / n
+        diffs.append(left_mean - right_mean)
+    diffs.sort()
+    low_i = int((alpha / 2) * (len(diffs) - 1))
+    high_i = int((1 - alpha / 2) * (len(diffs) - 1))
+    diff = (sum(a) / n) - (sum(b) / n)
+    low, high = diffs[low_i], diffs[high_i]
+    return {
+        "diff": round(diff, 4),
+        "low": round(low, 4),
+        "high": round(high, 4),
+        "within_noise": low <= 0.0 <= high,
+        "n": n,
+    }
+
+
+def auroc(scores: Sequence[float], labels: Sequence[bool]) -> Optional[float]:
+    """AUROC for ranking positive labels higher. None if undefined."""
+    pairs = [(float(score), 1 if label else 0) for score, label in zip(scores, labels)]
+    positives = sum(label for _score, label in pairs)
+    negatives = len(pairs) - positives
+    if positives == 0 or negatives == 0:
+        return None
+    pairs.sort(key=lambda item: item[0])
+    rank_sum = 0.0
+    for index, (_score, label) in enumerate(pairs, start=1):
+        if label:
+            rank_sum += index
+    # Mann–Whitney U formulation.
+    u = rank_sum - positives * (positives + 1) / 2.0
+    return round(u / (positives * negatives), 4)

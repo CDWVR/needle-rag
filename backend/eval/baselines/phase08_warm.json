@@ -1,0 +1,54 @@
+{
+  "phase": "0.8",
+  "housekeeping": {
+    "frozen_baseline_recall_at_5": {
+      "value": 0.8406,
+      "config": "run_eval.py --cold-jev-cache --faithfulness --runs 3; RETRIEVAL_RERANK_MODE=jev_filter (hard drop); top_k=30; jev_relevance_threshold=0.20; jev_candidate_limit=None (all 30); allow_retry=True; mean of 3 cold-Jev runs in phase0.json"
+    },
+    "phase072_fused_recall_at_5": {
+      "value": 0.942,
+      "config": "miss_analysis.py --fused-only; use_jev=False; top_k=30; allow_retry=False; span match via normalize_match_text; answerable-only (69 items)"
+    },
+    "phase072_jev_recall_at_5": {
+      "value": 0.8841,
+      "config": "miss_analysis Jev pass; use_jev=True hard filter; top_k=30; allow_retry=False; single clean pass (not mean of 3); answerable-only (69 items)"
+    },
+    "why_they_differ": [
+      "Frozen 0.8406 is Jev hard-filter mean over 3 cold runs with retries on; 0.8841 is one clean Jev pass without retries.",
+      "Fused 0.942 is a different mode (no Jev) and is not comparable to the Jev baseline.",
+      "Cold-Jev 520/fallback noise and retry rewrites move ranks between runs (MRR spread 0.016 on the freeze)."
+    ],
+    "absent_from_fused_top30_vs_fused_r30_1": "Fused r@30=1.000 on the clean fused-only pass means every answerable label matched some parent in the fused top-30. The later 'fused_rank_in_30=null' rows in the miss list were from a second, inconsistent scan (hash/parent selection after Jev demotions / degraded rerank), not from the clean fused-only table. Those 'absent' claims were measurement artifacts; the authoritative fused r@30 remains 1.000.",
+    "live": {
+      "jev_candidate_limit": null,
+      "jev_relevance_threshold": 0.2,
+      "top_k": 30,
+      "similarity_floor": 0.3,
+      "retrieval_rerank_mode": "jev_filter",
+      "jev_model": "typesafe/jev-1.13"
+    }
+  },
+  "openrouter_cost_ledger": {
+    "jev": 0.03904,
+    "writer": 0.0,
+    "checker": 0.0,
+    "rewriter": 0.0014,
+    "golden_build": 0.0,
+    "other": 0.0,
+    "total": 0.04044
+  },
+  "warm": {
+    "answerable": 69,
+    "elapsed_s": 452.9,
+    "cost": {
+      "jev": 0.03904,
+      "writer": 0.0,
+      "checker": 0.0,
+      "rewriter": 0.0014,
+      "golden_build": 0.0,
+      "other": 0.0,
+      "total": 0.04044
+    },
+    "cache": 1900
+  }
+}

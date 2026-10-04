@@ -1,0 +1,16 @@
+# Recurrent Neural Networks
+
+## Sequence modeling
+Recurrent neural networks (RNNs) process a sequence one step at a time while carrying a hidden state. At each time step t the network receives input x_t and previous state h_{t-1}, then computes h_t = f(W_x x_t + W_h h_{t-1} + b). The same weights are reused across time, which lets the model handle variable-length sequences.
+
+## Vanishing gradients
+Training with backpropagation through time can suffer from vanishing or exploding gradients when sequences are long. Gradients multiply across many steps, so signals shrink or blow up. Careful initialization, gradient clipping, and gated architectures mitigate this.
+
+## LSTM and GRU
+Long Short-Term Memory (LSTM) units introduce an input gate, forget gate, and output gate around a cell state. The forget gate decides what to discard from the cell state; the input gate decides what new information to write. Gated Recurrent Units (GRU) simplify this with an update gate and a reset gate, often matching LSTM accuracy with fewer parameters.
+
+## Applications
+RNNs and their gated variants are used for language modeling, machine translation encoder stages, speech recognition, and time-series forecasting. In modern practice, attention-based transformers often replace RNNs for large-scale text, but RNNs remain useful when latency budgets favor a streaming left-to-right state.
+
+## Teacher forcing
+During training, teacher forcing feeds the ground-truth previous token instead of the model's own prediction. This stabilizes early learning but can create exposure bias at inference, when the model must condition on its own outputs.

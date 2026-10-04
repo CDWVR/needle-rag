@@ -13,7 +13,9 @@ from eval.metrics import mean_reciprocal_rank
 from pipeline_logic import (
     CircuitBreaker,
     InfraError,
+    RETRIEVAL_RERANK_MODES,
     ScoreCache,
+    apply_retrieval_policy,
     assert_identical_passages,
     classify_http_infra_error,
     confidence_bucket,
@@ -36,6 +38,7 @@ from pipeline_logic import (
     recall_at_k,
     reciprocal_rank_fusion,
     select_parents,
+    soft_rrf_ranks,
     tokenize,
     verdict_passes,
 )
@@ -198,6 +201,25 @@ class PipelineLogicTests(unittest.TestCase):
         )
         self.assertFalse(fail["passed"])
         self.assertFalse(fail["checks"]["recall_at_5"])
+
+    def test_retrieval_rerank_modes_and_soft_rrf(self):
+        self.assertEqual(set(RETRIEVAL_RERANK_MODES), {"jev_filter", "fused_only", "jev_soft"})
+        blended = soft_rrf_ranks({"a": 1, "b": 2}, {"b": 1}, k=60)
+        self.assertEqual(blended[0][0], "b")
+        children = [
+            {"chunk_id": "a", "text": "alpha token here", "rrf_score": 0.03, "parent_id": "p1"},
+            {"chunk_id": "b", "text": "beta", "rrf_score": 0.02, "parent_id": "p2"},
+            {"chunk_id": "c", "text": "gamma", "rrf_score": 0.01, "parent_id": "p3"},
+        ]
+        scores = {"a": 0.1, "b": 0.9, "c": 0.5}
+        hard = apply_retrieval_policy(children, scores, policy="A", jev_threshold=0.2, top_n=2)
+        self.assertEqual(hard["kept_ids"][0], "b")
+        self.assertNotIn("a", hard["kept_ids"])
+        soft = apply_retrieval_policy(children, scores, policy="B", top_n=2)
+        self.assertEqual(len(soft["kept_ids"]), 2)
+        fused = apply_retrieval_policy(children, {"a": None, "b": None, "c": None}, policy="fused_only", top_n=2)
+        self.assertEqual(fused["kept_ids"], ["a", "b"])
+        self.assertEqual(set(fused["missing_jev"]), {"a", "b", "c"})
 
     def test_parent_text_used_for_span_matching_not_child_only(self):
         # Deterministic checks use context["text"], which the engine fills with parent text.

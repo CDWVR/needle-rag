@@ -1,0 +1,16 @@
+# Information Retrieval Basics
+
+## Corpus and queries
+An information retrieval (IR) system ranks documents from a corpus for a user query. Classical pipelines tokenize text, build an inverted index, and score documents with term-frequency statistics. Modern hybrid systems add dense vector retrieval beside sparse keyword search.
+
+## TF-IDF and BM25
+Term frequency–inverse document frequency (TF-IDF) upweights terms that are frequent in a document but rare across the corpus. BM25 improves on TF-IDF with saturation of term frequency and document-length normalization. BM25 remains a strong sparse baseline and is often fused with dense scores.
+
+## Dense retrieval
+Dense retrievers embed queries and passages into a shared vector space. Similarity is usually cosine or inner product. Dual-encoder models embed queries and documents separately for fast approximate nearest-neighbor search; cross-encoders score a query–passage pair jointly and are used as rerankers.
+
+## Evaluation metrics
+Recall@k measures whether a relevant document appears in the top k results. Mean reciprocal rank (MRR) rewards placing the first relevant hit higher. Normalized discounted cumulative gain (nDCG) accounts for graded relevance. Offline golden sets with content hashes and answer spans support grounded RAG evaluation.
+
+## Hybrid fusion
+Reciprocal rank fusion (RRF) combines ranked lists without calibrating raw scores. For each document, RRF adds 1 / (k + rank) across lists. Fusion of BM25 and dense retrieval often outperforms either channel alone, especially when queries mix rare exact tokens with paraphrases.

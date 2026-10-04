@@ -37,15 +37,21 @@ from rag_engine import (
     OPENROUTER_MODEL,
     RETRY_THRESHOLD,
     answer_for_eval,
+    assert_budget_for_estimate,
     build_throwaway_index,
     clear_jev_cache,
+    cost_ledger_snapshot,
     diagnose_answer,
     discard_index_version,
+    enable_jev_disk_cache,
     env_defaults,
+    estimate_harness_cost_usd,
     index_status,
     jev_cache_stats,
+    reset_cost_ledger,
     retrieve_parents,
     set_jev_cache_enabled,
+    set_reuse_jev_cache,
 )
 
 
@@ -440,7 +446,8 @@ def main() -> None:
     parser.add_argument("--sweep", action="store_true")
     parser.add_argument("--contextual-delta", action="store_true")
     parser.add_argument("--diagnose", action="store_true")
-    parser.add_argument("--cold-jev-cache", action="store_true", help="Disable Jev score cache for baseline runs.")
+    parser.add_argument("--cold-jev-cache", action="store_true", help="Disable in-memory Jev score cache for baseline runs.")
+    parser.add_argument("--reuse-jev-cache", action="store_true", help="Use on-disk Jev scores only; never fetch missing pairs.")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--max-infra-share", type=float, default=EVAL_MAX_INFRA_SHARE)
     parser.add_argument("--out", default="")
@@ -463,7 +470,24 @@ def main() -> None:
                 handle.write("\n")
         return
 
-    if args.cold_jev_cache:
+    answerable_n = sum(1 for row in rows if row.get("answerable", True))
+    estimate = estimate_harness_cost_usd(
+        n_questions=len(rows),
+        answerable=answerable_n,
+        run_faithfulness=bool(args.faithfulness),
+        run_jev=not args.reuse_jev_cache,
+        top_k=int(config.get("top_k", 30)),
+        runs=max(1, args.runs),
+    )
+    assert_budget_for_estimate(estimate, label="run_eval")
+    reset_cost_ledger()
+    enable_jev_disk_cache(True)
+
+    if args.reuse_jev_cache:
+        set_reuse_jev_cache(True)
+        set_jev_cache_enabled(True)
+        print("Reusing on-disk Jev cache (no new Jev fetches for misses)", file=sys.stderr, flush=True)
+    elif args.cold_jev_cache:
         set_jev_cache_enabled(False)
         clear_jev_cache()
         print("Jev score cache disabled for this harness run", file=sys.stderr, flush=True)
@@ -564,6 +588,7 @@ def main() -> None:
         payload["threshold_sweep"] = runs[0]["threshold_sweep"]
 
     payload["jev_cache"] = jev_cache_stats()
+    payload["openrouter_cost_by_purpose"] = cost_ledger_snapshot()
     if args.cold_jev_cache and runs:
         rerank = (((runs[0].get("with_jev") or {}).get("latency") or {}).get("rerank") or {})
         payload["cold_jev_rerank_latency"] = rerank

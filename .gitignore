@@ -6,5 +6,7 @@ backend/vector_store/
 backend/chroma_store/
 backend/uploads/
 backend/workspace.db
+workspace.db
+backend/tei_model_cache/
 temp_*
 .vscode/

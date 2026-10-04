@@ -242,6 +242,12 @@ function conversationTurns(messages) {
   return turns;
 }
 
+function activeConversationTitle() {
+  const thread = (state.conversations || []).find((item) => item.id === state.conversationId);
+  const title = String(thread?.title || "").trim();
+  return title || "Ask";
+}
+
 function renderAnswerHtml(text) {
   const safe = escapeHtml(text).replace(/\n\n/g, "</p><p>").replace(/\n/g, "<br>");
   return `<p>${safe.replace(/\[(\d+)\]/g, (_, n) => `<button type="button" class="citation" data-source="${n}" aria-label="View source ${n}">${n}</button>`)}</p>`;
@@ -281,10 +287,15 @@ function renderConversation() {
   const body = assistant
     ? renderAnswerHtml(assistant.content || "")
     : `<p class="empty-note">No answer was stored for this question.</p>`;
+  const sessionTitle = activeConversationTitle();
+  const asked = question?.content
+    ? `<p class="user-prompt"><span class="section-eyebrow">You asked</span>${escapeHtml(question.content)}</p>`
+    : "";
   root.innerHTML = `
     ${history}
     <div class="answer-kicker"><span>${assistant ? (validation.passed ? "Grounded answer" : "Answer") : "Question"}</span></div>
-    <h2 class="query-title">${escapeHtml(question?.content || "Question")}</h2>
+    <h2 class="query-title">${escapeHtml(sessionTitle)}</h2>
+    ${asked}
     <div class="meta-line">
       <span class="meta-chip ${validation.passed ? "good" : ""}">${assistant ? (validation.passed ? "GROUNDED" : "CHECK FAILED") : "WAITING"}</span>
       ${validation.confidence ? `<span class="meta-chip">${escapeHtml(String(validation.confidence).toUpperCase())} CONFIDENCE</span>` : ""}
@@ -504,7 +515,7 @@ async function sendQuestion(query) {
   $("#askForm").querySelector(".send").disabled = true;
   $("#contextMenu").hidden = true;
   const root = $("#conversationInner");
-  root.innerHTML = `<p class="status-line">Searching the index…</p><h2 class="query-title">${escapeHtml(query)}</h2>`;
+  root.innerHTML = `<p class="status-line">Searching the index…</p><h2 class="query-title">${escapeHtml(activeConversationTitle())}</h2><p class="user-prompt"><span class="section-eyebrow">You asked</span>${escapeHtml(query)}</p>`;
   const prior = state.messages.slice();
   try {
     const response = await fetch("/api/chat", {

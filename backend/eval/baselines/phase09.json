@@ -1,0 +1,1030 @@
+{
+  "phase": "0.9",
+  "decision_rule_predeclared": {
+    "primary_metrics": [
+      "policy_B.recall@5",
+      "policy_B.mrr",
+      "policy_B.exact.recall@5",
+      "policy_B.exact.mrr"
+    ],
+    "secondary_metrics": [
+      "policy_B.recall@15",
+      "policy_B.recall@30",
+      "fused_only.*",
+      "e1.auroc",
+      "query_embed_latency"
+    ],
+    "method": "Paired bootstrap on per-question differences (BGE-M3 minus MiniLM), 2000 resamples, 95% CI. Do not compare overlapping CIs of absolute means.",
+    "switch_if": "Primary metrics are non-negative (CI lower bound > -0.01) with at least one improved outside zero (CI lower bound > 0), AND exact-type recall@5 does not regress (its CI lower bound > -0.01). Otherwise keep MiniLM or run a bigger test.",
+    "multiple_comparison_note": "Several primary cells are inspected; family-wise error is uncontrolled. Treat borderline CI crossings cautiously."
+  },
+  "corpus": {
+    "active_collection": "needle_13ae98b86ec3",
+    "chunk_count": 4534,
+    "document_count": 5,
+    "chunks_by_document": {
+      "Attention Mechanism.pdf": 14,
+      "Autoencoders.pdf": 135,
+      "AI Engineering by Chip Huyen.pdf": 4365,
+      "rnn_basics.txt": 10,
+      "information_retrieval_basics.txt": 10
+    },
+    "sensitivity": {
+      "Attention Mechanism.pdf": "safe",
+      "Autoencoders.pdf": "safe",
+      "AI Engineering by Chip Huyen.pdf": "sensitive",
+      "rnn_basics.txt": "safe",
+      "information_retrieval_basics.txt": "safe"
+    },
+    "flag": "SENSITIVE: AI Engineering by Chip Huyen.pdf must not be sent to OpenRouter. SAFE academic/fixture texts may use OpenRouter. Unlisted docs default to TEI."
+  },
+  "golden_coverage": {
+    "n_total": 231,
+    "n_answerable": 175,
+    "n_unanswerable": 56,
+    "answerable_by_document": {
+      "Attention Mechanism.pdf": 70,
+      "Autoencoders.pdf": 25,
+      "AI Engineering by Chip Huyen.pdf": 40,
+      "rnn_basics.txt": 20,
+      "information_retrieval_basics.txt": 20
+    },
+    "documents_with_answerable": 5,
+    "corpus_documents": [
+      "AI Engineering by Chip Huyen.pdf",
+      "Attention Mechanism.pdf",
+      "Autoencoders.pdf",
+      "information_retrieval_basics.txt",
+      "rnn_basics.txt"
+    ],
+    "meets_150_answerable": true,
+    "meets_5_documents": true
+  },
+  "production_defaults_changed": false,
+  "published": false,
+  "latency": {
+    "minilm_warm": {
+      "cold_first_ms": 259.54,
+      "warm_p50_ms": 192.63,
+      "warm_p95_ms": 228.05,
+      "warm_n": 36,
+      "methodology": "Cold = first embed after client init. Warm = subsequent single-query embeds; discarded 3 warm-up queries before measuring."
+    },
+    "bge_tei_cpu": {
+      "cold_first_ms": 599.71,
+      "warm_p50_ms": 578.1,
+      "warm_p95_ms": 654.34,
+      "warm_n": 36,
+      "methodology": "Cold = first embed after client init. Warm = subsequent single-query embeds; discarded 3 warm-up queries before measuring."
+    },
+    "bge_openrouter": {
+      "cold_first_ms": 1.98,
+      "warm_p50_ms": 1.09,
+      "warm_p95_ms": 1.23,
+      "warm_n": 36,
+      "methodology": "Cold = first embed after client init. Warm = subsequent single-query embeds; discarded 3 warm-up queries before measuring."
+    },
+    "bge_tei_gpu": null,
+    "gpu_available": false
+  },
+  "cross_backend_cosine": {
+    "n": 169,
+    "mean_cosine": 0.999999,
+    "min_cosine": 0.99997,
+    "passed": true
+  },
+  "cost_estimate": {
+    "jev": 0.1386,
+    "writer": 0.0,
+    "checker": 0.0,
+    "rewriter": 0.0,
+    "total": 0.1387,
+    "openrouter_safe_reembed_usd": 6.8e-05,
+    "tei_sensitive_chunks": 4365,
+    "tei_safe_chunks_if_routed": 169,
+    "tei_cost_usd": 0.0,
+    "batch_size_tei": 32
+  },
+  "minilm_index": {
+    "version_id": "5c9aa991-6c23-4a86-b8be-57616d224f90",
+    "collection_name": "needle_5c9aa9916c23",
+    "embed_style": "raw",
+    "chunking": "Parent-child",
+    "embedding_model": "all-MiniLM-L6-v2",
+    "published": false,
+    "publish_override": false,
+    "chunk_count": 4534,
+    "embedded_count": 0,
+    "corpus_embed_ms": 0.0,
+    "document_count": 5
+  },
+  "bge_index": {
+    "version_id": "8fe7fe11-82e2-4567-aca0-2dc2caeb19a5",
+    "collection_name": "needle_8fe7fe1182e2",
+    "embed_style": "raw",
+    "chunking": "Parent-child",
+    "embedding_model": "baai/bge-m3",
+    "published": false,
+    "chunk_count": 4534,
+    "document_count": 5,
+    "corpus_embed_ms": 1786248.91,
+    "backend_chunk_counts": {
+      "openrouter": 169,
+      "tei": 4365
+    },
+    "routing": {
+      "tei": 4365,
+      "openrouter": 169
+    },
+    "tei_batch_size": 32,
+    "openrouter_batch_size": 32,
+    "openrouter_cost_usd": 1e-05
+  },
+  "minilm_fused": {
+    "overall": {
+      "recall@5": 0.6686,
+      "recall@5_ci": {
+        "mean": 0.6686,
+        "low": 0.6,
+        "high": 0.7429,
+        "n": 175
+      },
+      "recall@15": 0.6971,
+      "recall@15_ci": {
+        "mean": 0.6971,
+        "low": 0.6229,
+        "high": 0.7657,
+        "n": 175
+      },
+      "recall@30": 0.7429,
+      "recall@30_ci": {
+        "mean": 0.7429,
+        "low": 0.68,
+        "high": 0.8057,
+        "n": 175
+      },
+      "mrr": 0.5527,
+      "mrr_ci": {
+        "mean": 0.5527,
+        "low": 0.4885,
+        "high": 0.6212,
+        "n": 175
+      },
+      "n": 175
+    },
+    "by_type": {
+      "factual": {
+        "recall@5": 1.0,
+        "recall@5_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@15": 1.0,
+        "recall@15_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@30": 1.0,
+        "recall@30_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "mrr": 0.8627,
+        "mrr_ci": {
+          "mean": 0.8627,
+          "low": 0.796,
+          "high": 0.9183,
+          "n": 63
+        },
+        "n": 63
+      },
+      "exact": {
+        "recall@5": 0.5156,
+        "recall@5_ci": {
+          "mean": 0.5156,
+          "low": 0.3906,
+          "high": 0.6406,
+          "n": 64
+        },
+        "recall@15": 0.5781,
+        "recall@15_ci": {
+          "mean": 0.5781,
+          "low": 0.4531,
+          "high": 0.7031,
+          "n": 64
+        },
+        "recall@30": 0.6562,
+        "recall@30_ci": {
+          "mean": 0.6562,
+          "low": 0.5469,
+          "high": 0.7656,
+          "n": 64
+        },
+        "mrr": 0.3896,
+        "mrr_ci": {
+          "mean": 0.3896,
+          "low": 0.2899,
+          "high": 0.4985,
+          "n": 64
+        },
+        "n": 64
+      },
+      "multihop": {
+        "recall@5": 0.75,
+        "recall@5_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@15": 0.75,
+        "recall@15_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@30": 0.75,
+        "recall@30_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "mrr": 0.75,
+        "mrr_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "n": 8
+      },
+      "followup": {
+        "recall@5": 0.375,
+        "recall@5_ci": {
+          "mean": 0.375,
+          "low": 0.225,
+          "high": 0.525,
+          "n": 40
+        },
+        "recall@15": 0.4,
+        "recall@15_ci": {
+          "mean": 0.4,
+          "low": 0.25,
+          "high": 0.55,
+          "n": 40
+        },
+        "recall@30": 0.475,
+        "recall@30_ci": {
+          "mean": 0.475,
+          "low": 0.325,
+          "high": 0.625,
+          "n": 40
+        },
+        "mrr": 0.2859,
+        "mrr_ci": {
+          "mean": 0.2859,
+          "low": 0.1721,
+          "high": 0.4108,
+          "n": 40
+        },
+        "n": 40
+      }
+    }
+  },
+  "bge_fused": {
+    "overall": {
+      "recall@5": 0.6686,
+      "recall@5_ci": {
+        "mean": 0.6686,
+        "low": 0.6,
+        "high": 0.7371,
+        "n": 175
+      },
+      "recall@15": 0.72,
+      "recall@15_ci": {
+        "mean": 0.72,
+        "low": 0.6514,
+        "high": 0.7886,
+        "n": 175
+      },
+      "recall@30": 0.7314,
+      "recall@30_ci": {
+        "mean": 0.7314,
+        "low": 0.6629,
+        "high": 0.7943,
+        "n": 175
+      },
+      "mrr": 0.5725,
+      "mrr_ci": {
+        "mean": 0.5725,
+        "low": 0.5048,
+        "high": 0.6387,
+        "n": 175
+      },
+      "n": 175
+    },
+    "by_type": {
+      "factual": {
+        "recall@5": 1.0,
+        "recall@5_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@15": 1.0,
+        "recall@15_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@30": 1.0,
+        "recall@30_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "mrr": 0.8788,
+        "mrr_ci": {
+          "mean": 0.8788,
+          "low": 0.8114,
+          "high": 0.9339,
+          "n": 63
+        },
+        "n": 63
+      },
+      "exact": {
+        "recall@5": 0.5312,
+        "recall@5_ci": {
+          "mean": 0.5312,
+          "low": 0.4062,
+          "high": 0.6562,
+          "n": 64
+        },
+        "recall@15": 0.6719,
+        "recall@15_ci": {
+          "mean": 0.6719,
+          "low": 0.5625,
+          "high": 0.7812,
+          "n": 64
+        },
+        "recall@30": 0.7031,
+        "recall@30_ci": {
+          "mean": 0.7031,
+          "low": 0.5938,
+          "high": 0.8125,
+          "n": 64
+        },
+        "mrr": 0.4425,
+        "mrr_ci": {
+          "mean": 0.4425,
+          "low": 0.3417,
+          "high": 0.5525,
+          "n": 64
+        },
+        "n": 64
+      },
+      "multihop": {
+        "recall@5": 0.75,
+        "recall@5_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@15": 0.75,
+        "recall@15_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@30": 0.75,
+        "recall@30_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "mrr": 0.75,
+        "mrr_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "n": 8
+      },
+      "followup": {
+        "recall@5": 0.35,
+        "recall@5_ci": {
+          "mean": 0.35,
+          "low": 0.2,
+          "high": 0.5,
+          "n": 40
+        },
+        "recall@15": 0.35,
+        "recall@15_ci": {
+          "mean": 0.35,
+          "low": 0.2,
+          "high": 0.5,
+          "n": 40
+        },
+        "recall@30": 0.35,
+        "recall@30_ci": {
+          "mean": 0.35,
+          "low": 0.2,
+          "high": 0.5,
+          "n": 40
+        },
+        "mrr": 0.2625,
+        "mrr_ci": {
+          "mean": 0.2625,
+          "low": 0.15,
+          "high": 0.3875,
+          "n": 40
+        },
+        "n": 40
+      }
+    }
+  },
+  "minilm_policy_B": {
+    "overall": {
+      "recall@5": 0.6686,
+      "recall@5_ci": {
+        "mean": 0.6686,
+        "low": 0.5943,
+        "high": 0.7371,
+        "n": 175
+      },
+      "recall@15": 0.7429,
+      "recall@15_ci": {
+        "mean": 0.7429,
+        "low": 0.6743,
+        "high": 0.8114,
+        "n": 175
+      },
+      "recall@30": 0.7543,
+      "recall@30_ci": {
+        "mean": 0.7543,
+        "low": 0.6857,
+        "high": 0.8171,
+        "n": 175
+      },
+      "mrr": 0.582,
+      "mrr_ci": {
+        "mean": 0.582,
+        "low": 0.514,
+        "high": 0.6509,
+        "n": 175
+      },
+      "n": 175
+    },
+    "by_type": {
+      "factual": {
+        "recall@5": 0.9841,
+        "recall@5_ci": {
+          "mean": 0.9841,
+          "low": 0.9524,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@15": 1.0,
+        "recall@15_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@30": 1.0,
+        "recall@30_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "mrr": 0.902,
+        "mrr_ci": {
+          "mean": 0.902,
+          "low": 0.8398,
+          "high": 0.955,
+          "n": 63
+        },
+        "n": 63
+      },
+      "exact": {
+        "recall@5": 0.5312,
+        "recall@5_ci": {
+          "mean": 0.5312,
+          "low": 0.4062,
+          "high": 0.6562,
+          "n": 64
+        },
+        "recall@15": 0.6875,
+        "recall@15_ci": {
+          "mean": 0.6875,
+          "low": 0.5781,
+          "high": 0.7969,
+          "n": 64
+        },
+        "recall@30": 0.7031,
+        "recall@30_ci": {
+          "mean": 0.7031,
+          "low": 0.5938,
+          "high": 0.8125,
+          "n": 64
+        },
+        "mrr": 0.4174,
+        "mrr_ci": {
+          "mean": 0.4174,
+          "low": 0.3223,
+          "high": 0.5247,
+          "n": 64
+        },
+        "n": 64
+      },
+      "multihop": {
+        "recall@5": 0.75,
+        "recall@5_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@15": 0.75,
+        "recall@15_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@30": 0.75,
+        "recall@30_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "mrr": 0.75,
+        "mrr_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "n": 8
+      },
+      "followup": {
+        "recall@5": 0.375,
+        "recall@5_ci": {
+          "mean": 0.375,
+          "low": 0.225,
+          "high": 0.525,
+          "n": 40
+        },
+        "recall@15": 0.425,
+        "recall@15_ci": {
+          "mean": 0.425,
+          "low": 0.275,
+          "high": 0.575,
+          "n": 40
+        },
+        "recall@30": 0.45,
+        "recall@30_ci": {
+          "mean": 0.45,
+          "low": 0.3,
+          "high": 0.6,
+          "n": 40
+        },
+        "mrr": 0.3077,
+        "mrr_ci": {
+          "mean": 0.3077,
+          "low": 0.1858,
+          "high": 0.4435,
+          "n": 40
+        },
+        "n": 40
+      }
+    }
+  },
+  "bge_policy_B": {
+    "overall": {
+      "recall@5": 0.68,
+      "recall@5_ci": {
+        "mean": 0.68,
+        "low": 0.6057,
+        "high": 0.7486,
+        "n": 175
+      },
+      "recall@15": 0.7371,
+      "recall@15_ci": {
+        "mean": 0.7371,
+        "low": 0.6686,
+        "high": 0.8,
+        "n": 175
+      },
+      "recall@30": 0.7543,
+      "recall@30_ci": {
+        "mean": 0.7543,
+        "low": 0.6857,
+        "high": 0.8171,
+        "n": 175
+      },
+      "mrr": 0.6104,
+      "mrr_ci": {
+        "mean": 0.6104,
+        "low": 0.5428,
+        "high": 0.6744,
+        "n": 175
+      },
+      "n": 175
+    },
+    "by_type": {
+      "factual": {
+        "recall@5": 0.9841,
+        "recall@5_ci": {
+          "mean": 0.9841,
+          "low": 0.9524,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@15": 1.0,
+        "recall@15_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "recall@30": 1.0,
+        "recall@30_ci": {
+          "mean": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "n": 63
+        },
+        "mrr": 0.934,
+        "mrr_ci": {
+          "mean": 0.934,
+          "low": 0.8838,
+          "high": 0.9762,
+          "n": 63
+        },
+        "n": 63
+      },
+      "exact": {
+        "recall@5": 0.5781,
+        "recall@5_ci": {
+          "mean": 0.5781,
+          "low": 0.4531,
+          "high": 0.7031,
+          "n": 64
+        },
+        "recall@15": 0.6875,
+        "recall@15_ci": {
+          "mean": 0.6875,
+          "low": 0.5781,
+          "high": 0.7969,
+          "n": 64
+        },
+        "recall@30": 0.7344,
+        "recall@30_ci": {
+          "mean": 0.7344,
+          "low": 0.625,
+          "high": 0.8438,
+          "n": 64
+        },
+        "mrr": 0.4564,
+        "mrr_ci": {
+          "mean": 0.4564,
+          "low": 0.3561,
+          "high": 0.5669,
+          "n": 64
+        },
+        "n": 64
+      },
+      "multihop": {
+        "recall@5": 0.75,
+        "recall@5_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@15": 0.75,
+        "recall@15_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "recall@30": 0.75,
+        "recall@30_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "mrr": 0.75,
+        "mrr_ci": {
+          "mean": 0.75,
+          "low": 0.375,
+          "high": 1.0,
+          "n": 8
+        },
+        "n": 8
+      },
+      "followup": {
+        "recall@5": 0.35,
+        "recall@5_ci": {
+          "mean": 0.35,
+          "low": 0.2,
+          "high": 0.5,
+          "n": 40
+        },
+        "recall@15": 0.4,
+        "recall@15_ci": {
+          "mean": 0.4,
+          "low": 0.25,
+          "high": 0.55,
+          "n": 40
+        },
+        "recall@30": 0.4,
+        "recall@30_ci": {
+          "mean": 0.4,
+          "low": 0.25,
+          "high": 0.55,
+          "n": 40
+        },
+        "mrr": 0.3193,
+        "mrr_ci": {
+          "mean": 0.3193,
+          "low": 0.1905,
+          "high": 0.4612,
+          "n": 40
+        },
+        "n": 40
+      }
+    }
+  },
+  "paired_diff_cis": {
+    "policy_B.recall@5": {
+      "minilm": 0.6686,
+      "bge": 0.68,
+      "diff_ci": {
+        "diff": 0.0114,
+        "low": -0.0171,
+        "high": 0.04,
+        "within_noise": true,
+        "n": 175
+      }
+    },
+    "policy_B.mrr": {
+      "minilm": 0.582,
+      "bge": 0.6104,
+      "diff_ci": {
+        "diff": 0.0285,
+        "low": -0.0031,
+        "high": 0.0618,
+        "within_noise": true,
+        "n": 175
+      }
+    },
+    "policy_B.exact.recall@5": {
+      "minilm": 0.5312,
+      "bge": 0.5781,
+      "diff_ci": {
+        "diff": 0.0469,
+        "low": -0.0156,
+        "high": 0.125,
+        "within_noise": true,
+        "n": 64
+      }
+    },
+    "policy_B.exact.mrr": {
+      "minilm": 0.4174,
+      "bge": 0.4564,
+      "diff_ci": {
+        "diff": 0.0391,
+        "low": -0.0239,
+        "high": 0.1063,
+        "within_noise": true,
+        "n": 64
+      }
+    },
+    "policy_B.recall@15": {
+      "minilm": 0.7429,
+      "bge": 0.7371,
+      "diff_ci": {
+        "diff": -0.0057,
+        "low": -0.0286,
+        "high": 0.0171,
+        "within_noise": true,
+        "n": 175
+      }
+    },
+    "policy_B.recall@30": {
+      "minilm": 0.7543,
+      "bge": 0.7543,
+      "diff_ci": {
+        "diff": 0.0,
+        "low": -0.0229,
+        "high": 0.0229,
+        "within_noise": true,
+        "n": 175
+      }
+    },
+    "fused_only.recall@5": {
+      "minilm": 0.6686,
+      "bge": 0.6686,
+      "diff_ci": {
+        "diff": 0.0,
+        "low": -0.0343,
+        "high": 0.0343,
+        "within_noise": true,
+        "n": 175
+      }
+    },
+    "fused_only.mrr": {
+      "minilm": 0.5527,
+      "bge": 0.5725,
+      "diff_ci": {
+        "diff": 0.0198,
+        "low": -0.0126,
+        "high": 0.052,
+        "within_noise": true,
+        "n": 175
+      }
+    },
+    "fused_only.exact.recall@5": {
+      "minilm": 0.5156,
+      "bge": 0.5312,
+      "diff_ci": {
+        "diff": 0.0156,
+        "low": -0.0781,
+        "high": 0.1094,
+        "within_noise": true,
+        "n": 64
+      }
+    },
+    "fused_only.exact.mrr": {
+      "minilm": 0.3896,
+      "bge": 0.4425,
+      "diff_ci": {
+        "diff": 0.0529,
+        "low": -0.0206,
+        "high": 0.1188,
+        "within_noise": true,
+        "n": 64
+      }
+    },
+    "fused_only.recall@15": {
+      "minilm": 0.6971,
+      "bge": 0.72,
+      "diff_ci": {
+        "diff": 0.0229,
+        "low": -0.0057,
+        "high": 0.0571,
+        "within_noise": true,
+        "n": 175
+      }
+    },
+    "fused_only.recall@30": {
+      "minilm": 0.7429,
+      "bge": 0.7314,
+      "diff_ci": {
+        "diff": -0.0114,
+        "low": -0.0457,
+        "high": 0.0229,
+        "within_noise": true,
+        "n": 175
+      }
+    }
+  },
+  "e1_minilm": {
+    "folds": 5,
+    "auroc": 0.989,
+    "heldout_precision_at_recall_ge_0.90_mean": 0.8501,
+    "heldout_precision_folds": [
+      0.9375,
+      0.9091,
+      0.8571,
+      0.7692,
+      0.7778
+    ],
+    "heldout_precision_by_kind": {
+      "near_miss": 0.6857,
+      "off_topic": 0.7533
+    },
+    "kind_counts": {
+      "near_miss": 30,
+      "off_topic": 26
+    }
+  },
+  "e1_bge": {
+    "folds": 5,
+    "auroc": 0.9901,
+    "heldout_precision_at_recall_ge_0.90_mean": 0.8401,
+    "heldout_precision_folds": [
+      0.9333,
+      0.9091,
+      0.8889,
+      0.7692,
+      0.7
+    ],
+    "heldout_precision_by_kind": {
+      "near_miss": 0.6509,
+      "off_topic": 0.7581
+    },
+    "kind_counts": {
+      "near_miss": 30,
+      "off_topic": 26
+    }
+  },
+  "decision": {
+    "switch_to_bge_m3": false,
+    "non_negative_primaries": false,
+    "any_primary_improved_outside_zero": false,
+    "exact_recall@5_not_regressed": false,
+    "primary_cells_compared": 4,
+    "all_cells_compared": 12,
+    "multiple_comparison_risk": "Several primary cells are inspected; family-wise error is uncontrolled. Treat borderline CI crossings cautiously.",
+    "details": {
+      "policy_B.recall@5": {
+        "low": -0.0171,
+        "high": 0.04,
+        "diff": 0.0114
+      },
+      "policy_B.mrr": {
+        "low": -0.0031,
+        "high": 0.0618,
+        "diff": 0.0285
+      },
+      "policy_B.exact.recall@5": {
+        "low": -0.0156,
+        "high": 0.125,
+        "diff": 0.0469
+      },
+      "policy_B.exact.mrr": {
+        "low": -0.0239,
+        "high": 0.1063,
+        "diff": 0.0391
+      }
+    },
+    "verdict": "KEEP MiniLM (or run a bigger test)"
+  },
+  "tei_throughput_chunks_per_s": 2.45,
+  "index_size_bge": {
+    "chunk_count": 4534,
+    "dims": 1024,
+    "theoretical_dense_bytes": 18571264,
+    "theoretical_dense_mb": 17.711
+  },
+  "index_size_minilm": {
+    "chunk_count": 4534,
+    "dims": 384,
+    "theoretical_dense_bytes": 6964224,
+    "theoretical_dense_mb": 6.642
+  },
+  "query_latency_eval": {
+    "minilm": {
+      "p50": 214.02,
+      "p95": 290.34,
+      "mean": 220.2,
+      "n": 231,
+      "methodology": "warm timings after at least one prior embed call; excludes cold model load"
+    },
+    "bge_tei": {
+      "p50": 0.96,
+      "p95": 644.86,
+      "mean": 155.07,
+      "n": 462,
+      "methodology": "warm TEI query embeds during eval loop"
+    }
+  },
+  "open_items": [
+    "Local TEI shim (sentence-transformers) used on :18080 because Docker Desktop was freshly installed and not yet running compose; docker-compose.tei.yml is ready.",
+    "GPU TEI profile not measured (no NVIDIA device).",
+    "OpenRouter query-latency probe was dominated by on-disk embedding cache hits (~1ms); treat prior offline BGE OpenRouter p50/p95 ~1.4s/2.3s as the uncached network reference.",
+    "Family-wise error across 4 primary metric cells is uncontrolled.",
+    "Schema columns embedding_model/embedding_dim still design-only.",
+    "Full TEI docker cutover + memory sizing still pending after Desktop restart."
+  ],
+  "remaining_budget_after": 0.38228485199999995,
+  "tei_runtime": {
+    "mode": "local_tei_compatible_server",
+    "model": "BAAI/bge-m3",
+    "url": "http://127.0.0.1:18080",
+    "batch_size": 32,
+    "note": "Weights cached under backend/tei_model_cache; compose volume tei-bge-m3-cache for Docker path."
+  }
+}

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import json
+import sys
 import time
 import uuid
 import tempfile
@@ -35,6 +36,7 @@ from pipeline_logic import (
     NeedleError,
     NO_EVIDENCE_FALLBACK,
     CircuitBreaker,
+    RETRIEVAL_RERANK_MODES,
     ScoreCache,
     classify_http_infra_error,
     confidence_bucket,
@@ -47,6 +49,7 @@ from pipeline_logic import (
     passage_looks_like_instructions,
     publish_allowed,
     recall_at_k,
+    soft_rrf_ranks,
     contextual_passage,
     filter_by_similarity,
     fused_fallback_scores,
@@ -97,6 +100,10 @@ RRF_K = _env_int("NEEDLE_RRF_K", 60)
 JEV_RELEVANCE_THRESHOLD = _env_float("JEV_RELEVANCE_THRESHOLD", 0.20)
 JEV_MAX_CONCURRENCY = _env_int("JEV_MAX_CONCURRENCY", 4)
 JEV_CACHE_TTL_SECONDS = _env_float("JEV_CACHE_TTL_SECONDS", 3600)
+JEV_CANDIDATE_LIMIT = _env_int("JEV_CANDIDATE_LIMIT", 0)  # 0 = all fused candidates (up to top_k)
+RETRIEVAL_RERANK_MODE = os.getenv("RETRIEVAL_RERANK_MODE", "jev_filter").strip() or "jev_filter"
+# Approx USD per Jev candidate score for harness estimates (observed ~2e-5).
+_JEV_COST_PER_CANDIDATE = _env_float("COST_JEV_PER_CANDIDATE", 0.00002)
 CONDENSE_MAX_TOKENS = _env_int("CONDENSE_MAX_TOKENS", 120)
 CONDENSE_HISTORY_TURNS = _env_int("CONDENSE_HISTORY_TURNS", 8)
 RETRY_THRESHOLD = _env_float("RETRY_THRESHOLD", 0.35)
@@ -124,11 +131,61 @@ _writer_breaker = CircuitBreaker(CIRCUIT_FAILURES, CIRCUIT_RESET_SECONDS)
 _last_rerank_mode = "jev"
 _jev_cache_enabled = True
 _jev_cache_stats = {"hits": 0, "misses": 0}
+_reuse_jev_disk_cache = False
+_jev_disk_cache = None
+_cost_ledger: Dict[str, float] = {
+    "jev": 0.0,
+    "writer": 0.0,
+    "checker": 0.0,
+    "rewriter": 0.0,
+    "golden_build": 0.0,
+    "other": 0.0,
+}
+_cost_ledger_lock = threading.Lock()
+
+
+def reset_cost_ledger() -> None:
+    with _cost_ledger_lock:
+        for key in list(_cost_ledger):
+            _cost_ledger[key] = 0.0
+
+
+def record_cost(purpose: str, amount: float) -> None:
+    with _cost_ledger_lock:
+        bucket = purpose if purpose in _cost_ledger else "other"
+        _cost_ledger[bucket] = round(float(_cost_ledger.get(bucket, 0.0)) + float(amount), 6)
+
+
+def cost_ledger_snapshot() -> Dict[str, float]:
+    with _cost_ledger_lock:
+        total = sum(_cost_ledger.values())
+        return {**{key: round(value, 6) for key, value in _cost_ledger.items()}, "total": round(total, 6)}
 
 
 def set_jev_cache_enabled(enabled: bool) -> None:
     global _jev_cache_enabled
     _jev_cache_enabled = bool(enabled)
+
+
+def set_reuse_jev_cache(enabled: bool) -> None:
+    """When True, only disk-cached Jev scores are used; missing pairs are not fetched."""
+    global _reuse_jev_disk_cache, _jev_disk_cache
+    _reuse_jev_disk_cache = bool(enabled)
+    if _reuse_jev_disk_cache and _jev_disk_cache is None:
+        from jev_disk_cache import JevDiskCache
+
+        _jev_disk_cache = JevDiskCache()
+
+
+def enable_jev_disk_cache(enabled: bool = True) -> None:
+    global _jev_disk_cache
+    if enabled:
+        from jev_disk_cache import JevDiskCache
+
+        if _jev_disk_cache is None:
+            _jev_disk_cache = JevDiskCache()
+    else:
+        _jev_disk_cache = None
 
 
 def clear_jev_cache() -> None:
@@ -141,12 +198,83 @@ def jev_cache_stats() -> Dict[str, Any]:
     hits = int(_jev_cache_stats["hits"])
     misses = int(_jev_cache_stats["misses"])
     total = hits + misses
+    disk = None
+    if _jev_disk_cache is not None:
+        disk = {"path": _jev_disk_cache.path, "rows": _jev_disk_cache.count(), **_jev_disk_cache.stats}
     return {
         "enabled": _jev_cache_enabled,
+        "reuse_disk": _reuse_jev_disk_cache,
         "hits": hits,
         "misses": misses,
         "hit_rate": round(hits / total, 4) if total else 0.0,
+        "disk": disk,
     }
+
+
+def openrouter_remaining_budget() -> Optional[float]:
+    """Best-effort remaining USD on the OpenRouter key; None if unavailable."""
+    try:
+        import json
+        import urllib.request
+
+        key = _openrouter_key()
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as response:
+            payload = json.loads(response.read().decode())
+        data = payload.get("data") or payload
+        remaining = data.get("limit_remaining")
+        return float(remaining) if remaining is not None else None
+    except Exception:
+        return None
+
+
+def estimate_harness_cost_usd(
+    *,
+    n_questions: int,
+    answerable: int,
+    run_faithfulness: bool,
+    run_jev: bool,
+    top_k: int = TOP_K_CHILDREN,
+    runs: int = 1,
+) -> Dict[str, float]:
+    """Conservative preflight estimate printed before harness / Phase 0.8 jobs."""
+    jev = 0.0
+    if run_jev:
+        jev = answerable * max(1, top_k) * _JEV_COST_PER_CANDIDATE * max(1, runs)
+    writer = 0.0
+    checker = 0.0
+    rewriter = answerable * 0.00005 * max(1, runs)  # condense/retry rare
+    if run_faithfulness:
+        writer = n_questions * 0.00025 * max(1, runs)
+        checker = n_questions * 0.00008 * max(1, runs)
+    total = jev + writer + checker + rewriter
+    return {
+        "jev": round(jev, 4),
+        "writer": round(writer, 4),
+        "checker": round(checker, 4),
+        "rewriter": round(rewriter, 4),
+        "total": round(total, 4),
+    }
+
+
+def assert_budget_for_estimate(estimate: Dict[str, float], *, label: str = "harness") -> None:
+    remaining = openrouter_remaining_budget()
+    total = float(estimate.get("total") or 0)
+    print(
+        f"Estimated OpenRouter spend for {label}: ${total:.4f} "
+        f"(jev={estimate.get('jev')}, writer={estimate.get('writer')}, "
+        f"checker={estimate.get('checker')}, rewriter={estimate.get('rewriter')}); "
+        f"remaining={remaining if remaining is not None else 'unknown'}",
+        file=sys.stderr,
+        flush=True,
+    )
+    if remaining is not None and total > remaining + 1e-9:
+        raise RuntimeError(
+            f"Refusing to start {label}: estimated ${total:.4f} exceeds remaining ${remaining:.4f}."
+        )
 
 
 def set_jev_max_concurrency(value: Optional[int]) -> int:
@@ -197,6 +325,17 @@ SYSTEM_PROMPT = (
 )
 
 
+_embedding_client_override = None
+_openrouter_embed_client = None
+_tei_embed_client = None
+
+
+def set_embedding_client_override(client) -> None:
+    """Eval-only hook. Pass None to restore the production MiniLM path."""
+    global _embedding_client_override
+    _embedding_client_override = client
+
+
 def _embedding_function():
     global _embedding_fn
     if _embedding_fn is None:
@@ -209,6 +348,24 @@ def _embedding_function():
 def _embed(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
+    if _embedding_client_override is not None:
+        return _embedding_client_override.embed(texts)
+    # Opt-in remote backend. Default remains local MiniLM (production unchanged).
+    backend = (os.getenv("EMBED_BACKEND", "minilm") or "minilm").strip().lower()
+    if backend == "openrouter":
+        global _openrouter_embed_client
+        if _openrouter_embed_client is None:
+            from embeddings import BgeM3EmbeddingClient
+
+            _openrouter_embed_client = BgeM3EmbeddingClient()
+        return _openrouter_embed_client.embed(texts)
+    if backend == "tei":
+        global _tei_embed_client
+        if _tei_embed_client is None:
+            from embeddings import TeiEmbeddingClient
+
+            _tei_embed_client = TeiEmbeddingClient()
+        return _tei_embed_client.embed(texts)
     vectors = _embedding_function()(texts)
     return [[float(value) for value in vector] for vector in vectors]
 
@@ -232,7 +389,9 @@ def env_defaults() -> Dict[str, Any]:
         "rrf_k": RRF_K,
         "max_parents": MAX_PARENTS,
         "jev_relevance_threshold": JEV_RELEVANCE_THRESHOLD,
+        "jev_candidate_limit": JEV_CANDIDATE_LIMIT or None,
         "retry_threshold": RETRY_THRESHOLD,
+        "retrieval_rerank_mode": RETRIEVAL_RERANK_MODE,
         "answer_model": OPENROUTER_MODEL,
         "checker_model": CHECKER_MODEL,
         "jev_model": JEV_MODEL,
@@ -663,10 +822,26 @@ def build_throwaway_index(
     embed_style: str = "contextual",
     chunking: str = "Parent-child",
     content_hashes: Optional[Dict[str, str]] = None,
+    *,
+    embedding_model_id: Optional[str] = None,
+    include_document_names: Optional[List[str]] = None,
+    force_reembed: bool = False,
 ) -> Dict[str, Any]:
-    """Build a non-published index version for eval deltas, then leave cleanup to the caller."""
+    """Build a non-published index version for eval deltas, then leave cleanup to the caller.
+
+    Does not publish. Optional include_document_names filters to non-sensitive docs.
+    force_reembed=True ignores reusable MiniLM vectors (needed when swapping embedders).
+    """
     with _mutation_lock:
-        return _build_index_version(embed_style, chunking, content_hashes or {}, publish=False)
+        return _build_index_version(
+            embed_style,
+            chunking,
+            content_hashes or {},
+            publish=False,
+            embedding_model_id=embedding_model_id,
+            include_document_names=include_document_names,
+            force_reembed=force_reembed,
+        )
 
 
 def discard_index_version(version_id: str, collection_name: str) -> None:
@@ -696,7 +871,11 @@ def _build_index_version(
     *,
     publish: bool,
     publish_override: bool = False,
+    embedding_model_id: Optional[str] = None,
+    include_document_names: Optional[List[str]] = None,
+    force_reembed: bool = False,
 ) -> Dict[str, Any]:
+    model_id = embedding_model_id or EMBEDDING_MODEL_ID
     active = store.ensure_active_version(EMBEDDING_MODEL_ID)
     old = chroma_client.get_collection(active["collection_name"])
     try:
@@ -706,10 +885,30 @@ def _build_index_version(
     ids = list(payload.get("ids") or [])
     documents = list(payload.get("documents") or [])
     metadatas = list(payload.get("metadatas") or [])
+    raw_embeddings = payload.get("embeddings")
+    emb_by_id: Dict[str, Any] = {}
+    if (
+        raw_embeddings is not None
+        and not force_reembed
+        and model_id == EMBEDDING_MODEL_ID
+    ):
+        for chunk_id, vector in zip(ids, list(raw_embeddings)):
+            if vector is not None:
+                emb_by_id[chunk_id] = vector
+    allowed_names = {name for name in (include_document_names or []) if name}
+    if allowed_names:
+        kept = [
+            (chunk_id, document, metadata)
+            for chunk_id, document, metadata in zip(ids, documents, metadatas)
+            if (metadata or {}).get("document_name") in allowed_names
+        ]
+        ids = [item[0] for item in kept]
+        documents = [item[1] for item in kept]
+        metadatas = [item[2] for item in kept]
     version_id = str(uuid.uuid4())
     collection_name = "needle_" + version_id.replace("-", "")[:12]
     style = embed_style if embed_style in {"raw", "contextual"} else "raw"
-    store.begin_version(version_id, EMBEDDING_MODEL_ID, collection_name, embed_style=style, chunking=chunking)
+    store.begin_version(version_id, model_id, collection_name, embed_style=style, chunking=chunking)
     created = False
     try:
         new_collection = chroma_client.get_or_create_collection(
@@ -722,44 +921,44 @@ def _build_index_version(
         embed_inputs: List[str] = []
         copied_embeddings: List[Any] = []
         needs_embed: List[int] = []
-        raw_embeddings = payload.get("embeddings")
-        if raw_embeddings is None:
-            old_embeddings = []
-        else:
-            old_embeddings = list(raw_embeddings)
         previous_style = active.get("embed_style") or "raw"
         previous_chunking = active.get("chunking") or "Parent-child"
         contextual = style == "contextual"
         config_changed = previous_style != style or previous_chunking != chunking
-        for index, (document, metadata) in enumerate(zip(documents, metadatas)):
+        for index, (chunk_id, document, metadata) in enumerate(zip(ids, documents, metadatas)):
             metadata = dict(metadata or {})
             raw = metadata.get("raw_text") or document or ""
             document_hash = content_hashes.get(metadata.get("document_id") or "")
             hash_changed = bool(document_hash and metadata.get("content_hash") and document_hash != metadata.get("content_hash"))
+            prior = emb_by_id.get(chunk_id)
             reusable = (
-                not config_changed
+                not force_reembed
+                and model_id == EMBEDDING_MODEL_ID
+                and not config_changed
                 and not hash_changed
-                and index < len(old_embeddings)
-                and old_embeddings[index] is not None
+                and prior is not None
             )
             metadata["raw_text"] = raw
             metadata["embed_style"] = style
             metadata["chunking"] = chunking
             metadata["version_id"] = version_id
+            metadata["embedding_model"] = model_id
             if document_hash:
                 metadata["content_hash"] = document_hash
             stored_documents.append(raw)
             stored_metadata.append(metadata)
             if reusable:
-                copied_embeddings.append(list(old_embeddings[index]))
+                copied_embeddings.append(list(prior))
             else:
                 copied_embeddings.append(None)
                 needs_embed.append(index)
                 embed_inputs.append(contextual_passage(metadata.get("header_context") or "", raw, contextual))
+        embed_started = time.perf_counter()
         if needs_embed:
             fresh = _embed(embed_inputs)
             for slot, vector in zip(needs_embed, fresh):
                 copied_embeddings[slot] = vector
+        embed_ms = (time.perf_counter() - embed_started) * 1000
         if ids:
             embeddings = copied_embeddings
             for start in range(0, len(ids), 100):
@@ -799,9 +998,12 @@ def _build_index_version(
             "collection_name": collection_name,
             "embed_style": style,
             "chunking": chunking,
+            "embedding_model": model_id,
             "published": published,
             "publish_override": bool(publish_override),
             "chunk_count": len(ids),
+            "embedded_count": len(needs_embed),
+            "corpus_embed_ms": round(embed_ms, 2),
         }
     except Exception:
         store.fail_version(version_id)
@@ -1018,22 +1220,40 @@ def _rerank_with_jev(query: str, candidates: List[Dict[str, Any]], version_id: s
     normalized = normalize_query(query)
     scores: Dict[int, float] = {}
     misses: List[int] = []
+    missing_disk: List[int] = []
     for index, candidate in enumerate(candidates):
         cached = None
-        if _jev_cache_enabled:
+        if _jev_disk_cache is not None:
+            cached = _jev_disk_cache.get(query=query, chunk_text=candidate.get("text") or "", jev_model=JEV_MODEL)
+        if cached is None and _jev_cache_enabled:
             cached = _jev_score_cache.get((normalized, candidate["chunk_id"], version_id))
         if cached is None:
             misses.append(index)
             _jev_cache_stats["misses"] += 1
+            if _reuse_jev_disk_cache:
+                missing_disk.append(index)
         else:
             scores[index] = cached
             _jev_cache_stats["hits"] += 1
-    if misses:
+    if missing_disk and _reuse_jev_disk_cache:
+        # Offline reuse: never fabricate; return only cached rows and mark the rest missing.
+        ranked = [{"document_index": index, "score": score} for index, score in scores.items()]
+        ranked.sort(key=lambda item: item["score"], reverse=True)
+        return ranked
+    if misses and not _reuse_jev_disk_cache:
         fresh = _jev_scores(query, [candidates[index]["text"] for index in misses])
+        record_cost("jev", len(misses) * _JEV_COST_PER_CANDIDATE)
         for offset, score in enumerate(fresh):
             original = misses[offset]
             if _jev_cache_enabled:
                 _jev_score_cache.put((normalized, candidates[original]["chunk_id"], version_id), score)
+            if _jev_disk_cache is not None:
+                _jev_disk_cache.put(
+                    query=query,
+                    chunk_text=candidates[original].get("text") or "",
+                    jev_model=JEV_MODEL,
+                    score=score,
+                )
             scores[original] = score
     ranked = [{"document_index": index, "score": score} for index, score in scores.items()]
     ranked.sort(key=lambda item: item["score"], reverse=True)
@@ -1183,6 +1403,7 @@ def _openrouter_chat(
     max_tokens: int,
     model: Optional[str] = None,
     return_usage: bool = False,
+    cost_purpose: Optional[str] = None,
 ):
     chosen = model or OPENROUTER_MODEL
     try:
@@ -1226,6 +1447,8 @@ def _openrouter_chat(
     usage = dict(payload.get("usage") or {})
     usage["model"] = chosen
     usage["cost_usd"] = round(_usage_cost(usage, model=chosen), 6)
+    purpose = cost_purpose or ("checker" if chosen == CHECKER_MODEL else "writer")
+    record_cost(purpose, float(usage["cost_usd"] or 0))
     if return_usage:
         return text, usage
     return text
@@ -1470,12 +1693,20 @@ def retrieve_parents(
     jev_candidate_limit: Optional[int] = None,
     skip_jev_margin: Optional[float] = None,
     allow_retry: bool = True,
+    retrieval_rerank_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Timed retrieval used by the eval harness. Matching uses content_hash + parent text."""
     from pipeline_logic import needs_condense
 
+    rerank_mode = (retrieval_rerank_mode or RETRIEVAL_RERANK_MODE or "jev_filter").strip()
+    if rerank_mode not in RETRIEVAL_RERANK_MODES:
+        raise NeedleError(f"Unknown RETRIEVAL_RERANK_MODE {rerank_mode!r}")
+    # fused_only never calls Jev; jev_* modes honor use_jev.
+    effective_use_jev = bool(use_jev) and rerank_mode != "fused_only"
+
     latencies: Dict[str, float] = {}
     tokens: List[Dict[str, Any]] = []
+    missing_jev_ids: List[str] = []
     search_query = query
     if needs_condense(history or []):
         started = time.perf_counter()
@@ -1498,6 +1729,7 @@ def retrieve_parents(
                 temperature=0,
                 max_tokens=CONDENSE_MAX_TOKENS,
                 return_usage=True,
+                cost_purpose="rewriter",
             )
             search_query = " ".join(text.split())[:500] or query
             tokens.append({"stage": "condense", **usage})
@@ -1545,7 +1777,7 @@ def retrieve_parents(
 
     skip_jev = False
     skip_reason = None
-    if use_jev and skip_jev_margin is not None and len(fused_scored) >= 2:
+    if effective_use_jev and skip_jev_margin is not None and len(fused_scored) >= 2:
         lead = float(fused_scored[0].get("rrf_score") or 0) - float(fused_scored[1].get("rrf_score") or 0)
         if lead > float(skip_jev_margin):
             skip_jev = True
@@ -1553,14 +1785,17 @@ def retrieve_parents(
 
     started = time.perf_counter()
     mode = "fused"
+    limit = jev_candidate_limit
+    if limit is None and JEV_CANDIDATE_LIMIT > 0:
+        limit = JEV_CANDIDATE_LIMIT
     jev_input = candidates
-    if jev_candidate_limit is not None:
-        jev_input = candidates[: max(1, int(jev_candidate_limit))]
-    if candidates and use_jev and not skip_jev:
+    if limit is not None:
+        jev_input = candidates[: max(1, int(limit))]
+    if candidates and effective_use_jev and not skip_jev:
         ranked, mode = _rank_candidates(search_query, jev_input, active.get("version_id") or "eval")
         reached = mode == "jev"
-        # Map ranked indexes back onto the truncated candidate list.
         scored = []
+        scored_ids = set()
         for item in ranked:
             index = int(item["document_index"])
             if 0 <= index < len(jev_input):
@@ -1569,14 +1804,29 @@ def retrieve_parents(
                 child["jev_score"] = child["score"]
                 child["reached_jev"] = reached
                 scored.append(child)
-        # Append fused-only tail that never reached Jev.
-        seen = {child["chunk_id"] for child in scored}
+                scored_ids.add(child["chunk_id"])
+        jev_input_ids = {child["chunk_id"] for child in jev_input}
         for child in fused_scored:
-            if child["chunk_id"] in seen:
+            if child["chunk_id"] in scored_ids:
                 continue
             tail = dict(child)
             tail["reached_jev"] = False
+            if _reuse_jev_disk_cache and child["chunk_id"] in jev_input_ids:
+                missing_jev_ids.append(child["chunk_id"])
             scored.append(tail)
+        if rerank_mode == "jev_soft" and mode == "jev":
+            fused_ranks = {child["chunk_id"]: child["fused_rank"] for child in fused_scored}
+            jev_ordered = [child for child in scored if child.get("reached_jev")]
+            jev_ranks = {child["chunk_id"]: rank for rank, child in enumerate(jev_ordered, start=1)}
+            blended = soft_rrf_ranks(fused_ranks, jev_ranks, k=rrf_k)
+            by_id = {child["chunk_id"]: child for child in scored}
+            rescored = []
+            for chunk_id, blend_score in blended:
+                child = dict(by_id[chunk_id])
+                child["score"] = blend_score
+                rescored.append(child)
+            scored = rescored
+            mode = "jev_soft"
     elif candidates:
         ranked = [
             {"document_index": index, "score": score}
@@ -1594,16 +1844,20 @@ def retrieve_parents(
                 scored.append(child)
     else:
         scored = []
-    keep_floor = jev_relevance_threshold if use_jev and not skip_jev else 0.0
+
+    # Hard filter only in jev_filter mode; soft/fused keep everyone for ordering.
+    hard_filter = effective_use_jev and not skip_jev and rerank_mode == "jev_filter" and mode == "jev"
+    keep_floor = jev_relevance_threshold if hard_filter else 0.0
     summary = rank_summary(scored, keep_threshold=keep_floor)
     latencies["rerank"] = (time.perf_counter() - started) * 1000
 
     retry_used = False
     if (
         allow_retry
-        and use_jev
+        and effective_use_jev
         and not skip_jev
         and mode == "jev"
+        and rerank_mode == "jev_filter"
         and summary["top_score"] < retry_threshold
     ):
         retry_used = True
@@ -1620,6 +1874,7 @@ def retrieve_parents(
                 temperature=0,
                 max_tokens=CONDENSE_MAX_TOKENS,
                 return_usage=True,
+                cost_purpose="rewriter",
             )
             tokens.append({"stage": "retry_rewrite", **usage})
             search_query = " ".join(rewritten.split())[:500] or query
@@ -1639,7 +1894,7 @@ def retrieve_parents(
                 exclude_ids=exclude_document_ids,
             )
             candidates = reciprocal_rank_fusion([vector_hits, keyword_hits], k=rrf_k)
-            jev_input = candidates[: max(1, int(jev_candidate_limit or len(candidates)))]
+            jev_input = candidates[: max(1, int(limit or len(candidates)))]
             ranked, mode = _rank_candidates(search_query, jev_input, active.get("version_id") or "eval")
             scored = []
             for item in ranked:
@@ -1655,7 +1910,7 @@ def retrieve_parents(
         except (NeedleError, InfraError):
             latencies["retry"] = 0.0
 
-    kept = summary["kept"] if use_jev and not skip_jev else summary["ordered"]
+    kept = summary["kept"] if hard_filter else summary["ordered"]
     chosen = select_parents(kept, max_parents)
     parents = []
     for child in chosen:
@@ -1669,6 +1924,7 @@ def retrieve_parents(
         parent["reached_jev"] = bool(child.get("reached_jev"))
         parent["jev_score"] = child.get("jev_score")
         parent["score"] = child.get("score")
+        parent["rrf_score"] = child.get("rrf_score")
         ordered_parents.append(parent)
     fused_parents = []
     for child in select_parents(fused_scored, max(max_parents, 30)):
@@ -1677,11 +1933,18 @@ def retrieve_parents(
         parent["fused_rank"] = child.get("fused_rank")
         parent["rrf_score"] = child.get("rrf_score")
         fused_parents.append(parent)
-    abstained = (
-        use_jev
-        and not skip_jev
-        and (summary["kept_count"] == 0 or (retry_used and summary["top_score"] < retry_threshold))
-    )
+
+    # Abstain/confidence: Jev top score when available; otherwise fused RRF signal.
+    top_for_abstain = summary["top_score"]
+    if not effective_use_jev or skip_jev or mode == "fused":
+        top_for_abstain = float(fused_scored[0].get("rrf_score") or 0) if fused_scored else 0.0
+        # Normalize fused RRF into a 0-1-ish confidence proxy for thresholds.
+        abstain_floor = 0.0
+        abstained = top_for_abstain <= abstain_floor
+    else:
+        abstained = hard_filter and (
+            summary["kept_count"] == 0 or (retry_used and summary["top_score"] < retry_threshold)
+        )
     return {
         "query": search_query,
         "parents": parents,
@@ -1689,15 +1952,18 @@ def retrieve_parents(
         "fused_parents": fused_parents,
         "scored_children": scored,
         "top_score": summary["top_score"],
+        "top_score_for_abstain": top_for_abstain,
         "kept_count": summary["kept_count"],
         "rerank_mode": "fused_skip" if skip_jev else mode,
+        "retrieval_rerank_mode": rerank_mode,
         "skip_jev": skip_jev,
         "skip_reason": skip_reason,
         "retry_used": retry_used,
         "abstained": abstained,
+        "missing_jev_chunk_ids": missing_jev_ids,
         "latencies_ms": {key: round(value, 2) for key, value in latencies.items()},
         "tokens": tokens,
-        "jev_candidate_limit": jev_candidate_limit,
+        "jev_candidate_limit": limit,
         "jev_concurrency": JEV_MAX_CONCURRENCY,
     }
 
