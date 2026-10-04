@@ -60,6 +60,8 @@ from pipeline_logic import (
     reciprocal_rank_fusion,
     select_parents,
     tokenize,
+    extract_json_object,
+    parse_verdict,
     validation_fallback,
     verdict_passes,
 )
@@ -1465,80 +1467,9 @@ def _generate_draft(prompt: str) -> str:
     )
 
 
-def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.I)
-    if fenced:
-        text = fenced.group(1)
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if match:
-        try:
-            parsed = json.loads(match.group(0))
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-    # Recover from truncated checker JSON (common when the reason is long).
-    recovered: Dict[str, Any] = {}
-    for field in ("grounded", "safe", "relevant"):
-        found = re.search(rf'"{field}"\s*:\s*(true|false)', text, flags=re.I)
-        if found:
-            recovered[field] = found.group(1).lower() == "true"
-    indexes = re.search(r'"unsupported_indexes"\s*:\s*\[(.*?)\]', text, flags=re.S)
-    if indexes:
-        values = []
-        for token in re.findall(r"-?\d+", indexes.group(1)):
-            values.append(int(token))
-        recovered["unsupported_indexes"] = values
-    elif '"unsupported_indexes"' in text and re.search(r'"unsupported_indexes"\s*:\s*\[\s*$', text):
-        recovered["unsupported_indexes"] = []
-    reason = re.search(r'"reason"\s*:\s*"([^"]*)', text)
-    if reason:
-        recovered["reason"] = reason.group(1)
-    return recovered or None
-
-
-def _parse_verdict(raw: str) -> Dict[str, Any]:
-    parsed = _extract_json_object(raw)
-    if not parsed:
-        return {
-            "grounded": False,
-            "safe": False,
-            "relevant": False,
-            "reason": "The answer check did not return a readable verdict.",
-            "parse_ok": False,
-            "grounded_explicit": None,
-        }
-    missing = [field for field in ("safe", "relevant") if field not in parsed]
-    # Accept common aliases some cheap models emit.
-    if "safe" not in parsed and "is_safe" in parsed:
-        parsed["safe"] = parsed["is_safe"]
-        missing = [field for field in missing if field != "safe"]
-    if "relevant" not in parsed and "is_relevant" in parsed:
-        parsed["relevant"] = parsed["is_relevant"]
-        missing = [field for field in missing if field != "relevant"]
-    grounded_explicit = None if "grounded" not in parsed else bool(parsed.get("grounded"))
-    # If unsupported_indexes is present, the verdict is usable even when grounded was omitted.
-    usable = ("unsupported_indexes" in parsed) or not missing
-    return {
-        # Groundedness is inferred from unsupported_indexes unless the checker set it explicitly.
-        "grounded": True if grounded_explicit is None else grounded_explicit,
-        "safe": bool(parsed.get("safe", True)) if usable else False,
-        "relevant": bool(parsed.get("relevant", True)) if usable else False,
-        "reason": str(parsed.get("reason") or "").strip(),
-        "parse_ok": usable,
-        "missing_fields": missing,
-        "grounded_explicit": grounded_explicit,
-        "unsupported_indexes_raw": parsed.get("unsupported_indexes"),
-    }
+# Kept as thin aliases so existing call sites and notebooks keep working.
+_extract_json_object = extract_json_object
+_parse_verdict = parse_verdict
 
 
 def split_ready(answer: str) -> List[str]:

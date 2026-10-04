@@ -14,5 +14,22 @@ jobs:
           python-version: "3.12"
       - name: Unit tests
         run: python backend/test_pipeline_units.py
-      - name: Smoke eval
-        run: python backend/eval/run_eval.py --k 5
+      - name: Eval helpers smoke
+        # Keep CI free of Chroma/OpenRouter. Full harness needs a local index + API key.
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          from eval.metrics import hit_from_rank, mean_reciprocal_rank, recall_at_k
+          from eval.schema import load_jsonl, validate_candidate
+          from pipeline_logic import extract_json_object, parse_verdict
+
+          assert recall_at_k(["a", "b"], ["b"], 2) == 1.0
+          assert mean_reciprocal_rank(["x", "y"], ["y"]) == 0.5
+          assert hit_from_rank(3, 5) == 1.0
+          assert extract_json_object('{"grounded": true, "safe": true')["grounded"] is True
+          verdict = parse_verdict('{"safe": true, "relevant": true, "unsupported_indexes": []}')
+          assert verdict["parse_ok"] and verdict["grounded"]
+          rows = load_jsonl("eval/golden.jsonl")
+          assert rows, "golden.jsonl must not be empty"
+          print(f"ok: golden={len(rows)} helpers")
+          PY

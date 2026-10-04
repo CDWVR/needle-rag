@@ -40,6 +40,8 @@ from pipeline_logic import (
     select_parents,
     soft_rrf_ranks,
     tokenize,
+    extract_json_object,
+    parse_verdict,
     verdict_passes,
 )
 
@@ -243,26 +245,22 @@ class PipelineLogicTests(unittest.TestCase):
 
     def test_groundedness_inferred_when_checker_omits_grounded_field(self):
         # Mirrors the Phase 0.6 bug: checker returned safe/relevant only.
-        from rag_engine import _parse_verdict
-
-        verdict = _parse_verdict('{"safe": true, "relevant": true, "unsupported_indexes": [], "reason": "ok"}')
+        verdict = parse_verdict('{"safe": true, "relevant": true, "unsupported_indexes": [], "reason": "ok"}')
         self.assertTrue(verdict["parse_ok"])
         self.assertIsNone(verdict["grounded_explicit"])
         self.assertTrue(verdict["grounded"])
 
     def test_truncated_checker_json_is_recovered(self):
-        from rag_engine import _extract_json_object, _parse_verdict
-
         raw = (
             '{\n  "grounded": true,\n  "safe": true,\n  "relevant": true,\n'
             '  "reason": "Both sentences are supported by passages [1] and [2]",\n'
             '  "uns'
         )
-        parsed = _extract_json_object(raw)
+        parsed = extract_json_object(raw)
         self.assertIsNotNone(parsed)
         self.assertTrue(parsed["grounded"])
         self.assertTrue(parsed["safe"])
-        verdict = _parse_verdict(raw)
+        verdict = parse_verdict(raw)
         self.assertTrue(verdict["parse_ok"])
 
 
