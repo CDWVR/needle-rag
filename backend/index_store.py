@@ -302,9 +302,11 @@ class IndexStore:
         with self._lock:
             rows = self.conn.execute(
                 """
-                SELECT document_id, document_name, COUNT(*) AS chunk_count, MAX(page_number) AS max_page
-                FROM documents_fts
-                GROUP BY document_id, document_name
+                SELECT f.document_id, f.document_name, COUNT(*) AS chunk_count, MAX(f.page_number) AS max_page,
+                       c.uploaded_at, c.file_type
+                FROM documents_fts f
+                LEFT JOIN catalog c ON c.document_id = f.document_id
+                GROUP BY f.document_id, f.document_name
                 """
             ).fetchall()
             deleted = {
@@ -323,6 +325,8 @@ class IndexStore:
                     "name": row["document_name"],
                     "chunk_count": row["chunk_count"],
                     "max_page": row["max_page"] or 1,
+                    "uploaded_at": row["uploaded_at"],
+                    "file_type": row["file_type"],
                 }
             )
         return documents

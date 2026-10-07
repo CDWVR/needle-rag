@@ -1,113 +1,141 @@
-"""Migration-safe golden schema helpers.
+"""Golden-set schema and evidence matching.
 
-Golden rows never store Chroma or SQLite ids. Matching is by document
-content_hash plus a verbatim answer_span found inside a retrieved parent.
+A golden row never stores Chroma or SQLite ids, which change on every re-index.
+Evidence is anchored by the source document (its file name, optionally also the
+SHA-256 of the uploaded bytes) plus a verbatim `answer_span` that must appear in
+a retrieved parent passage.
+
+    {
+      "id": "rnn-001",
+      "question": "What problem do LSTMs address?",
+      "history": [],                       # prior turns for follow-ups: [{"role", "content"}]
+      "type": "factual",                   # factual | exact | multihop | followup | unanswerable
+      "answerable": true,
+      "expected": [{"document": "rnn_basics.txt", "answer_span": "vanishing gradient"}],
+      "key_facts": ["vanishing gradient"], # optional: each must appear in a correct answer ("a|b" = either)
+      "forbidden_phrases": ["..."],        # optional: must never appear in a released answer
+      "standalone_question": "...",        # required with history: the offline tier searches with it
+      "reference_answer": "...",           # optional: used by the LLM judge
+      "tags": ["smoke"]                    # optional
+    }
+
+Expected items may also carry "page" (1-based) to check page-level citation.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 GOLDEN_TYPES = ("factual", "exact", "multihop", "followup", "unanswerable")
+_FORBIDDEN_KEYS = ("document_id", "chunk_id", "parent_id", "collection_name")
 
 
-def content_hash_from_texts(texts: Sequence[str]) -> str:
-    blob = "\n".join(sorted((text or "").strip() for text in texts if (text or "").strip()))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+def _normalize(text: str) -> str:
+    # Local copy of pipeline_logic.normalize_match_text so CI can import this without the engine.
+    cleaned = (text or "").replace(" ", " ").replace(" ", " ").replace(" ", " ")
+    for left, right in (("“", '"'), ("”", '"'), ("„", '"'), ("‘", "'"), ("’", "'"), ("–", "-"), ("—", "-"),
+                        ("−", "-"), ("­", ""), ("…", "...")):
+        cleaned = cleaned.replace(left, right)
+    cleaned = re.sub(r"\s*-\s*", "-", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip().lower()
 
 
-def pick_answer_span(text: str, *, min_chars: int = 24, max_chars: int = 160) -> str:
-    cleaned = re.sub(r"\s+", " ", (text or "").strip())
-    if not cleaned:
-        return ""
-    if len(cleaned) <= max_chars:
-        return cleaned
-    # Prefer a sentence-like window that still fits.
-    parts = re.split(r"(?<=[.!?])\s+", cleaned)
-    for part in parts:
-        part = part.strip()
-        if min_chars <= len(part) <= max_chars:
-            return part
-    return cleaned[:max_chars].rsplit(" ", 1)[0].strip() or cleaned[:max_chars]
+def span_in_text(text: str, span: str) -> bool:
+    if not span:
+        return True
+    return span in (text or "") or _normalize(span) in _normalize(text)
 
 
-def pick_exact_term(text: str) -> str:
-    cleaned = text or ""
-    # CamelCase / code-like / Title Case tokens first, then longer words.
-    candidates = re.findall(r"\b[A-Z][A-Za-z0-9_\-]{2,}\b", cleaned)
-    if not candidates:
-        candidates = [w for w in re.findall(r"\b[A-Za-z][A-Za-z0-9_\-]{4,}\b", cleaned) if w.lower() not in {
-            "about", "these", "those", "where", "which", "their", "there", "using", "based"
-        }]
-    if not candidates:
-        return ""
-    return max(candidates, key=len)
+# "What is the title of the document?" only makes sense next to the passage it was written from.
+_DECONTEXTUALISED = re.compile(
+    r"\b(?:the|this|that|above|given|provided)\s+(?:passage|excerpt|text|snippet|section|chunk|document|article)\b"
+    r"|\bmentioned in the\b|\baccording to the (?:passage|text|excerpt)\b"
+    # Template questions from the old generator: "What does the corpus say about 'Ideally'?"
+    r"|^what does the corpus say about\b|\bwhat is mentioned about\b|\bthe heading that contains the token\b",
+    re.I,
+)
 
 
-def validate_candidate(row: Dict[str, Any]) -> List[str]:
-    errors = []
-    if not row.get("id"):
+def is_decontextualised(question: str) -> bool:
+    return bool(_DECONTEXTUALISED.search(question or ""))
+
+
+def validate_row(row: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    if not str(row.get("id") or "").strip():
         errors.append("missing id")
-    if not (row.get("question") or "").strip():
+    if not str(row.get("question") or "").strip():
         errors.append("missing question")
+    elif is_decontextualised(row.get("question") or ""):
+        errors.append("question points at 'the passage/document'; rewrite it so it stands alone")
     qtype = row.get("type")
     if qtype not in GOLDEN_TYPES:
         errors.append(f"bad type {qtype!r}")
-    if "answerable" not in row:
-        errors.append("missing answerable")
-    history = row.get("history")
-    if history is None:
-        errors.append("missing history")
-    elif not isinstance(history, list):
-        errors.append("history must be a list")
-    expected = row.get("expected")
-    if expected is None:
-        errors.append("missing expected")
-    elif not isinstance(expected, list):
+    if not isinstance(row.get("answerable"), bool):
+        errors.append("answerable must be true or false")
+    history = row.get("history", [])
+    if not isinstance(history, list) or any(
+        not isinstance(turn, dict) or turn.get("role") not in {"user", "assistant"} or not str(turn.get("content") or "").strip()
+        for turn in history
+    ):
+        errors.append("history must be a list of {role: user|assistant, content}")
+    if qtype == "followup" and not history:
+        errors.append("followup rows need history")
+    expected = row.get("expected", [])
+    if not isinstance(expected, list):
         errors.append("expected must be a list")
-    else:
-        for item in expected:
-            if not isinstance(item, dict):
-                errors.append("expected item must be an object")
-                continue
-            if any(key in item for key in ("document_id", "chunk_id", "parent_id", "collection_name")):
-                errors.append("expected must not reference DB or Chroma ids")
-            if not item.get("content_hash"):
-                errors.append("expected item missing content_hash")
-            if row.get("answerable") and not (item.get("answer_span") or "").strip():
-                errors.append("answerable item missing answer_span")
-    if row.get("answerable") is True and qtype == "unanswerable":
-        errors.append("unanswerable type must set answerable=false")
+        expected = []
+    for item in expected:
+        if not isinstance(item, dict):
+            errors.append("expected item must be an object")
+            continue
+        if any(key in item for key in _FORBIDDEN_KEYS):
+            errors.append("expected must not reference database or Chroma ids")
+        if not (item.get("document") or item.get("content_hash")):
+            errors.append("expected item needs a document name or content_hash")
+    if row.get("answerable") is True:
+        if not expected:
+            errors.append("answerable rows need at least one expected passage")
+        if any(not str(item.get("answer_span") or "").strip() for item in expected if isinstance(item, dict)):
+            errors.append("answerable expected items need an answer_span")
+        if qtype == "unanswerable":
+            errors.append("type unanswerable requires answerable=false")
     if row.get("answerable") is False and qtype != "unanswerable":
-        errors.append("answerable=false requires type=unanswerable")
+        errors.append("answerable=false requires type unanswerable")
+        if isinstance(item, dict) and "page" in item and not (isinstance(item["page"], int) and item["page"] >= 1):
+            errors.append("expected page must be a positive integer")
+    for field in ("key_facts", "tags", "forbidden_phrases"):
+        value = row.get(field)
+        if value is not None and (not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value)):
+            errors.append(f"{field} must be a list of non-empty strings")
+    standalone = row.get("standalone_question")
+    if standalone is not None and not (isinstance(standalone, str) and standalone.strip()):
+        errors.append("standalone_question must be a non-empty string")
+    if history and not standalone:
+        errors.append("rows with history need standalone_question (used by the offline tier)")
     return errors
 
 
-def golden_row(
-    *,
-    item_id: str,
-    question: str,
-    history: Optional[List[Dict[str, str]]] = None,
-    answerable: bool,
-    expected: List[Dict[str, str]],
-    qtype: str,
-) -> Dict[str, Any]:
-    row = {
-        "id": item_id,
-        "question": question.strip(),
-        "history": history or [],
-        "answerable": bool(answerable),
-        "expected": expected,
-        "type": qtype,
-    }
-    problems = validate_candidate(row)
-    if problems:
-        raise ValueError("; ".join(problems))
-    return row
+def validate_dataset(rows: Sequence[Dict[str, Any]]) -> List[str]:
+    """Row errors plus duplicate ids and duplicate (question, history) pairs, which inflate metrics."""
+    problems: List[str] = []
+    seen_ids: Dict[str, int] = {}
+    seen_questions: Dict[str, str] = {}
+    for line, row in enumerate(rows, start=1):
+        for error in validate_row(row):
+            problems.append(f"row {line} ({row.get('id')}): {error}")
+        row_id = str(row.get("id") or "")
+        if row_id in seen_ids:
+            problems.append(f"row {line}: duplicate id {row_id!r} (first on row {seen_ids[row_id]})")
+        seen_ids.setdefault(row_id, line)
+        key = json.dumps([_normalize(row.get("question") or ""), row.get("history") or []], sort_keys=True)
+        if key in seen_questions:
+            problems.append(f"row {line} ({row_id}): duplicate question of {seen_questions[key]}")
+        seen_questions.setdefault(key, row_id)
+    return problems
 
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -115,11 +143,24 @@ def load_jsonl(path: str) -> List[Dict[str, Any]]:
         return []
     rows = []
     with open(path, encoding="utf-8") as handle:
-        for line in handle:
+        for number, line in enumerate(handle, start=1):
             line = line.strip()
-            if line:
+            if not line or line.startswith("//"):
+                continue
+            try:
                 rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{number}: {exc}") from exc
     return rows
+
+
+def write_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> int:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    materialised = list(rows)
+    with open(path, "w", encoding="utf-8") as handle:
+        for row in materialised:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(materialised)
 
 
 def append_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> int:
@@ -132,34 +173,40 @@ def append_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> int:
     return count
 
 
-def write_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> int:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    materialised = list(rows)
-    with open(path, "w", encoding="utf-8") as handle:
-        for row in materialised:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    return len(materialised)
+def _same_document(parent: Dict[str, Any], item: Dict[str, Any]) -> bool:
+    name = str(item.get("document") or "").strip()
+    if name and name == str(parent.get("document_name") or "").strip():
+        return True
+    content_hash = str(item.get("content_hash") or "").strip()
+    return bool(content_hash) and content_hash == str(parent.get("content_hash") or "").strip()
 
 
-def expected_hashes(row: Dict[str, Any]) -> List[str]:
-    return [item["content_hash"] for item in row.get("expected") or [] if item.get("content_hash")]
+def parent_matches(parent: Dict[str, Any], item: Dict[str, Any]) -> bool:
+    return _same_document(parent, item) and span_in_text(parent.get("text") or "", str(item.get("answer_span") or ""))
 
 
-def parent_matches_expected(parent: Dict[str, Any], expected: Sequence[Dict[str, str]]) -> bool:
-    from pipeline_logic import corpus_contains_span
-
-    text = parent.get("text") or ""
-    content_hash = parent.get("content_hash") or ""
-    for item in expected:
-        if content_hash and content_hash == item.get("content_hash"):
-            span = item.get("answer_span") or ""
-            if not span or corpus_contains_span(text, span):
-                return True
-    return False
-
-
-def first_match_rank(retrieved_parents: Sequence[Dict[str, Any]], expected: Sequence[Dict[str, str]]) -> Optional[int]:
-    for index, parent in enumerate(retrieved_parents, start=1):
-        if parent_matches_expected(parent, expected):
-            return index
+def first_match_rank(parents: Sequence[Dict[str, Any]], expected: Sequence[Dict[str, Any]]) -> Optional[int]:
+    """1-based rank of the first parent that contains any expected passage."""
+    for rank, parent in enumerate(parents, start=1):
+        if any(parent_matches(parent, item) for item in expected):
+            return rank
     return None
+
+
+def expected_found(parents: Sequence[Dict[str, Any]], expected: Sequence[Dict[str, Any]], k: int) -> List[bool]:
+    """For each expected passage, whether it appears in the top-k parents (multi-hop recall)."""
+    top = list(parents)[: max(0, k)]
+    return [any(parent_matches(parent, item) for parent in top) for item in expected]
+
+
+def documents_covered(row: Dict[str, Any], available: Dict[str, set]) -> bool:
+    """True when every expected document is present in the index being evaluated.
+
+    `available` is {"names": {...}, "hashes": {...}}.
+    """
+    for item in row.get("expected") or []:
+        name = str(item.get("document") or "").strip()
+        content_hash = str(item.get("content_hash") or "").strip()
+        if not ((name and name in available.get("names", set())) or (content_hash and content_hash in available.get("hashes", set()))):
+            return False
+    return True

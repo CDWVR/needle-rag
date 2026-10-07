@@ -6,21 +6,22 @@
 ![Python](https://img.shields.io/badge/Python_3.13-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-FF6B6B?style=for-the-badge)
 ![SQLite](https://img.shields.io/badge/SQLite_FTS5-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Gemini](https://img.shields.io/badge/Google_Gemini-4285F4?style=for-the-badge&logo=google&logoColor=white)
+![OpenRouter](https://img.shields.io/badge/OpenRouter-6566F1?style=for-the-badge)
 
 ---
 
 ## ✨ Features
 
 - **🌐 Global Database Chat** — Query your entire unified database, or isolate to a single document.
-- **⚡ Vector search with a similarity gate** — Embeds the question, retrieves the top children, and drops hits below an absolute cosine floor or a drop-off from the best match. Exact keyword hits are extra candidates, not a substitute for that gate.
+- **⚡ Hybrid search** — Vector hits above a cosine floor are fused (RRF) with BM25 keyword hits and, when the question names a code such as `E-104` or `TERN-SCALE`, an exact-phrase match list.
 - **⚖️ Jev reranking** — [Jev](https://pypi.org/project/jev-reranker/) scores every surviving passage for usefulness as evidence and discards the ones that only share a topic. Parent chunks are loaded after that decision.
 - **🏗️ Parent-Child Chunking** — Granular 400-char child chunks for laser-focused semantic retrieval, seamlessly mapped back to massive 2,000-char parent chunks to preserve surrounding context.
 - **📊 Metadata Scaffolding** — Automatically extracts Markdown headers (Chapters/Sections) to provide spatial awareness to citations.
 - **📄 Multi-Modal Parsing** — Processes text-based PDFs, DOCX, PPTX, and XLSX using `PyMuPDF` and Microsoft's `MarkItDown`.
 - **🆓 Unlimited Free Embeddings** — Swapped out cloud embeddings for local, highly-optimized `all-MiniLM-L6-v2` running via ONNX Runtime for zero rate limits and maximum privacy.
-- **🚀 Async Ingestion** — FastAPI background tasks ensure massive 400-page textbooks process without blocking the server.
-- **🎨 Premium UI/UX** — A handcrafted Charcoal/Zinc aesthetic featuring fluid glassmorphism, responsive floating chat components, and a perfectly centered conversational layout.
+- **🚀 Non-blocking Ingestion** — Uploads are parsed and embedded on a worker thread, so a 400-page textbook does not stall chat or other requests.
+- **🧪 Production eval** — A repo-owned test corpus and golden set run through the exact production pipeline, gated in CI. See [Evaluation](#-evaluation).
+- **🎨 Workspace UI** — Ask, knowledge base, document detail, pipeline, analytics, and settings views with retrieval traces and source inspection.
 
 ---
 
@@ -89,9 +90,15 @@ When a document is uploaded, it is passed to either `PyMuPDF` (to preserve exact
 Text is split into **2,000-character parent chunks**, then into **400-character children**. Each parent also gets a short index card so a heading-level summary can be retrieved. Only those units are embedded. Parent text is stored separately and loaded after Jev decides which hits are worth expanding.
 
 ### 3. Retrieval, Jev, and the answer check
-The question is tokenized and embedded with the same `all-MiniLM-L6-v2` model recorded on the active index. Search refuses to run when that version is incompatible. Vector hits below cosine similarity `0.30`, or below 70% of the best hit, are dropped. Keyword matches can still be offered to Jev, which then keeps passages at relevance `0.20` or higher. The top parents are assembled with citations. An OpenRouter chat model writes a draft, and a second pass releases it only when it is grounded, safe, and relevant. Otherwise the user gets a no-answer fallback and no citations. Jev itself is called through OpenRouter at `https://openrouter.ai/api/v1/systemone`, so one `OPENROUTER_API_KEY` covers reranking and answers.
+The question is tokenized and embedded with the same `all-MiniLM-L6-v2` model recorded on the active index. Search refuses to run when that version is incompatible. Vector hits below cosine similarity `0.30` are dropped. Keyword matches can still be offered to Jev, which then keeps passages at relevance `0.20` or higher. The top parents are assembled with citations. An OpenRouter chat model writes a draft, and a second pass releases it only when it is grounded, safe, and relevant. Otherwise the user gets a no-answer fallback and no citations. Jev itself is called through OpenRouter at `https://openrouter.ai/api/v1/systemone`, so one `OPENROUTER_API_KEY` covers reranking and answers.
 
-Uploads and deletes write the active index. `POST /api/index/refresh` rebuilds a new collection and publishes it only after the copied count matches. Deletes are applied to every non-failed version in the registry.
+Chat and the eval run the same code path (`run_pipeline` in `backend/rag_engine.py`), so evaluation measures what users get.
+
+Uploads and deletes write the active index. `POST /api/index/refresh` rebuilds a new collection and publishes it only after the copied count matches and recall@5 on your workspace golden questions has not dropped by more than 0.10 (fused ranking, so the check costs nothing). If fewer than 30 golden questions cover your documents, the UI offers to publish without that comparison. Deletes are applied to every non-failed version in the registry.
+
+### Jev configuration
+
+Jev runs through OpenRouter by default, so `OPENROUTER_API_KEY` covers everything. To call TypeSafe directly instead, set `JEV_PROVIDER=typesafe` and `TYPESAFE_API_KEY`. Timeouts (`JEV_TIMEOUT_SECONDS=30`) and retries (`JEV_MAX_RETRIES=2`) are kept short so a slow Jev falls back to a local ranker instead of stalling a chat. Every option is listed in `.env.example`.
 
 ---
 
@@ -140,6 +147,34 @@ python main.py
 
 ### Open in Browser
 Navigate to **http://localhost:8000**
+
+---
+
+## 🧪 Evaluation
+
+The eval lives in `backend/eval/` and is run from `backend/`:
+
+```bash
+python -m eval validate
+```
+
+```bash
+python -m eval run --suite hermetic --tier offline
+```
+
+```bash
+python -m eval run --suite hermetic --tier full --max-cost 0.50
+```
+
+**Suites**
+- `hermetic` — `eval/corpus/` holds eleven documents about a fictional company (Markdown, text, CSV, and a PDF rendered at run time so page citations are tested), including two conflicting policy versions and a passage carrying an injected instruction. `eval/datasets/hermetic.jsonl` has 117 questions: factual, exact-code, multi-hop, follow-up, near-miss unanswerable, off-topic, and injection cases. Every run ingests the corpus through the real upload code into a throwaway data directory, so it never touches your workspace.
+- `workspace` — `eval/datasets/workspace.jsonl` asks about your own documents and runs read-only against your live index. Rows whose documents are not indexed are skipped. Grow it with `python -m eval draft` then `python -m eval review`.
+
+**Tiers**
+- `offline` — retrieval only, fused ranking, no model calls: free and deterministic. Reports hit@1/3/5/10, recall@k, MRR, nDCG, and page-level hits. CI runs it on every push.
+- `full` — the production path (condense, Jev, retry, writer, checker). Adds answer rate, false-refusal rate, key-fact recall, citation validity, whether citations point at the expected evidence, abstention precision/recall on unanswerable questions, injection leaks, per-stage latency, and cost. `--judge` adds an LLM correctness grade.
+
+**Gates** — `eval/config.json` sets absolute floors per suite and tier, plus the largest allowed drop against the committed baseline in `eval/baselines/`. Model-backed tiers compare question by question with a bootstrap confidence interval, so noise on a few questions does not fail the gate. Exit codes: 0 pass, 1 gate failed, 2 dataset or setup error, 3 stopped by budget or infrastructure errors. `--update-baseline` records a new baseline. Reports go to `eval/reports/<suite>/` (JSON, Markdown, and per-question JSONL), and the Pipeline and Analytics views show the latest result.
 
 ---
 

@@ -9,8 +9,9 @@ import sqlite3
 import threading
 from typing import List, Optional, Sequence
 
+from paths import data_path
 
-DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_store", "embedding_cache.sqlite")
+DEFAULT_PATH = data_path("chroma_store", "embedding_cache.sqlite")
 
 
 def text_hash(text: str) -> str:

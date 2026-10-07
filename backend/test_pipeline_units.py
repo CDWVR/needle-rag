@@ -1,4 +1,4 @@
-"""Gates and index registry behavior that do not call Jev or Gemini."""
+"""Gates and index registry behavior that do not call Jev or OpenRouter."""
 
 import os
 import sys
@@ -9,14 +9,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from index_store import IndexStore
 from workspace import WorkspaceStore
-from eval.metrics import mean_reciprocal_rank
+from eval import metrics as eval_metrics
+from eval.report import aggregate, evaluate_gates
+from eval.schema import validate_dataset, validate_row
 from pipeline_logic import (
     CircuitBreaker,
     InfraError,
     RETRIEVAL_RERANK_MODES,
     ScoreCache,
-    apply_retrieval_policy,
-    assert_identical_passages,
     classify_http_infra_error,
     confidence_bucket,
     contextual_passage,
@@ -24,8 +24,10 @@ from pipeline_logic import (
     corpus_contains_span,
     deterministic_violations,
     fused_fallback_scores,
-    infra_error_share,
-    infra_errors_exceed_share,
+    identifier_phrases,
+    is_refusal,
+    keyword_terms,
+    missing_required_citation,
     kept_sentences,
     normalize_match_text,
     normalize_unsupported_indexes,
@@ -35,7 +37,6 @@ from pipeline_logic import (
     index_card,
     needs_condense,
     publish_allowed,
-    recall_at_k,
     reciprocal_rank_fusion,
     select_parents,
     soft_rrf_ranks,
@@ -100,15 +101,12 @@ class PipelineLogicTests(unittest.TestCase):
         self.assertGreater(scores[0], scores[1])
         self.assertGreater(scores[1], scores[2])
 
-    def test_recall_and_publish_gate(self):
-        self.assertEqual(recall_at_k(["a", "b", "c"], ["b"], 2), 1.0)
-        self.assertEqual(recall_at_k(["a"], ["b"], 1), 0.0)
+    def test_publish_gate(self):
         self.assertTrue(publish_allowed(0.8, 0.75, 0.1, golden_count=40, min_golden=30))
         self.assertFalse(publish_allowed(0.8, 0.6, 0.1, golden_count=40, min_golden=30))
         self.assertFalse(publish_allowed(0.9, 0.9, 0.1, golden_count=0, min_golden=30))
         self.assertFalse(publish_allowed(0.9, 0.9, 0.1, golden_count=10, min_golden=30))
         self.assertTrue(publish_allowed(0.9, 0.9, 0.1, golden_count=10, min_golden=30, override=True))
-        self.assertEqual(mean_reciprocal_rank(["x", "b"], ["b"]), 0.5)
 
     def test_publish_gate_requires_configurable_minimum_golden(self):
         self.assertTrue(publish_allowed(0.5, 0.5, 0.1, golden_count=5, min_golden=5))
@@ -162,66 +160,13 @@ class PipelineLogicTests(unittest.TestCase):
         self.assertEqual(classify_http_infra_error(520), "upstream_5xx")
         self.assertEqual(classify_http_infra_error(None, timeout=True), "timeout")
         self.assertIsNone(classify_http_infra_error(400))
-        self.assertAlmostEqual(infra_error_share(2, 100), 0.02)
-        self.assertFalse(infra_errors_exceed_share(2, 100, max_share=0.02))
-        self.assertTrue(infra_errors_exceed_share(3, 100, max_share=0.02))
         err = InfraError("limited", status_code=403, kind="key_limit_or_forbidden")
         self.assertEqual(err.kind, "key_limit_or_forbidden")
-
-    def test_harness_excludes_infra_from_faithfulness_and_abstention(self):
-        # Simulate metric inputs the harness builds after skipping infra rows.
-        from eval.metrics import abstention_scores
-
-        grounded_flags = [1.0, 0.0]  # infra row omitted
-        abstain_pred = [False, True]
-        abstain_label = [False, True]
-        self.assertEqual(sum(grounded_flags) / len(grounded_flags), 0.5)
-        scores = abstention_scores(abstain_pred, abstain_label)
-        self.assertEqual(scores["recall"], 1.0)
-        self.assertTrue(infra_errors_exceed_share(3, 100, max_share=0.02))
-
-    def test_parity_gate_tolerances(self):
-        from eval.parity import parity_gate, top5_overlap, top_ids_from_parents
-
-        parents = [
-            {"content_hash": "abc", "text": "Wear gloves in the lab today."},
-            {"content_hash": "def", "text": "Other passage about SSO."},
-        ]
-        ids = top_ids_from_parents(parents, limit=5)
-        self.assertEqual(len(ids), 2)
-        self.assertGreaterEqual(top5_overlap(ids, ids), 0.9)
-        gate = parity_gate(
-            baseline={"recall_at_5": 0.80, "recall_at_30": 0.90, "mrr": 0.70},
-            candidate={"recall_at_5": 0.81, "recall_at_30": 0.88, "mrr": 0.71},
-            per_query_overlap=[1.0, 0.8, 1.0],
-        )
-        self.assertTrue(gate["passed"])
-        fail = parity_gate(
-            baseline={"recall_at_5": 0.80, "recall_at_30": 0.90, "mrr": 0.70},
-            candidate={"recall_at_5": 0.70, "recall_at_30": 0.90, "mrr": 0.70},
-            per_query_overlap=[1.0],
-        )
-        self.assertFalse(fail["passed"])
-        self.assertFalse(fail["checks"]["recall_at_5"])
 
     def test_retrieval_rerank_modes_and_soft_rrf(self):
         self.assertEqual(set(RETRIEVAL_RERANK_MODES), {"jev_filter", "fused_only", "jev_soft"})
         blended = soft_rrf_ranks({"a": 1, "b": 2}, {"b": 1}, k=60)
         self.assertEqual(blended[0][0], "b")
-        children = [
-            {"chunk_id": "a", "text": "alpha token here", "rrf_score": 0.03, "parent_id": "p1"},
-            {"chunk_id": "b", "text": "beta", "rrf_score": 0.02, "parent_id": "p2"},
-            {"chunk_id": "c", "text": "gamma", "rrf_score": 0.01, "parent_id": "p3"},
-        ]
-        scores = {"a": 0.1, "b": 0.9, "c": 0.5}
-        hard = apply_retrieval_policy(children, scores, policy="A", jev_threshold=0.2, top_n=2)
-        self.assertEqual(hard["kept_ids"][0], "b")
-        self.assertNotIn("a", hard["kept_ids"])
-        soft = apply_retrieval_policy(children, scores, policy="B", top_n=2)
-        self.assertEqual(len(soft["kept_ids"]), 2)
-        fused = apply_retrieval_policy(children, {"a": None, "b": None, "c": None}, policy="fused_only", top_n=2)
-        self.assertEqual(fused["kept_ids"], ["a", "b"])
-        self.assertEqual(set(fused["missing_jev"]), {"a", "b", "c"})
 
     def test_parent_text_used_for_span_matching_not_child_only(self):
         # Deterministic checks use context["text"], which the engine fills with parent text.
@@ -235,13 +180,6 @@ class PipelineLogicTests(unittest.TestCase):
     def test_unsupported_indexes_zero_based_are_converted(self):
         self.assertEqual(normalize_unsupported_indexes([0, 1], 3), [1, 2])
         self.assertEqual(normalize_unsupported_indexes([1, 2], 3), [1, 2])
-
-    def test_writer_and_checker_passages_must_match_bytes(self):
-        left = [{"text": "same"}]
-        right = [{"text": "same"}]
-        assert_identical_passages(left, right)
-        with self.assertRaises(AssertionError):
-            assert_identical_passages(left, [{"text": "different"}])
 
     def test_groundedness_inferred_when_checker_omits_grounded_field(self):
         # Mirrors the Phase 0.6 bug: checker returned safe/relevant only.
@@ -401,6 +339,151 @@ class WorkspaceMessageTests(unittest.TestCase):
         self.store.record_event(query="Does it require SAML?", grounded=False, withheld=True, latency_ms=10, source_count=0, best_similarity=0.1, candidate_count=4, outcome="no_coverage")
         gaps = self.store.analytics(30)["gaps"]
         self.assertEqual(gaps[0]["outcome"], "no_coverage")
+
+
+class RetrievalTermsTests(unittest.TestCase):
+    def test_keyword_terms_drop_noise_but_keep_codes(self):
+        self.assertEqual(keyword_terms("What does E-104 mean on a Tern-3?"), ["what", "does", "104", "mean", "tern"])
+
+    def test_identifier_phrases_target_codes_not_product_names(self):
+        self.assertEqual(identifier_phrases("What should I do for E-104?"), ['"e 104"'])
+        self.assertEqual(identifier_phrases("Is IP54 on the TERN-SCALE plan?"), ['"ip54"', '"tern scale"'])
+        self.assertEqual(identifier_phrases("Firmware 4.2.1 notes"), ['"4 2 1"'])
+        # A single trailing digit names a product or quarter mentioned everywhere.
+        self.assertEqual(identifier_phrases("How heavy is the Tern-3 in Q2?"), [])
+
+
+class CitationPolicyTests(unittest.TestCase):
+    contexts = [
+        {"document_id": "d1", "document_name": "policy.pdf", "text": "Keep receipts above 25 EUR."},
+        {"document_id": "d2", "document_name": "notes.txt", "text": "Other."},
+    ]
+
+    def test_required_document_needs_some_citation(self):
+        self.assertIsNone(missing_required_citation("Keep receipts above 25 EUR.", self.contexts, set()))
+        problem = missing_required_citation("Keep receipts above 25 EUR.", self.contexts, {"d1"})
+        self.assertEqual(problem["kind"], "missing_citation")
+
+    def test_any_valid_marker_or_document_name_satisfies_it(self):
+        self.assertIsNone(missing_required_citation("Keep receipts [2].", self.contexts, {"d1"}))
+        self.assertIsNone(missing_required_citation("Per policy, keep receipts.", self.contexts, {"d1"}))
+        self.assertIsNotNone(missing_required_citation("Keep receipts [7].", self.contexts, {"d1"}))
+
+    def test_unrelated_required_documents_do_not_block(self):
+        self.assertIsNone(missing_required_citation("Keep receipts.", self.contexts, {"d9"}))
+
+
+class EvalSchemaTests(unittest.TestCase):
+    row = {
+        "id": "x1", "type": "factual", "answerable": True, "question": "What is the cap?",
+        "expected": [{"document": "policy.pdf", "answer_span": "capped at 60 EUR"}],
+    }
+
+    def test_valid_row(self):
+        self.assertEqual(validate_row(self.row), [])
+
+    def test_database_ids_are_rejected(self):
+        bad = {**self.row, "expected": [{"document": "p.pdf", "chunk_id": "c1", "answer_span": "x"}]}
+        self.assertTrue(any("database" in error for error in validate_row(bad)))
+
+    def test_followups_need_history_and_a_standalone_question(self):
+        bad = {**self.row, "type": "followup"}
+        self.assertTrue(any("history" in error for error in validate_row(bad)))
+        no_standalone = {**self.row, "history": [{"role": "user", "content": "Earlier?"}]}
+        self.assertTrue(any("standalone" in error for error in validate_row(no_standalone)))
+
+    def test_questions_must_stand_alone(self):
+        for question in ("What is the title of the document?", "What does the corpus say about 'Ideally'?",
+                         "What is the name of the bottleneck mentioned in the passage?"):
+            self.assertTrue(any("stands alone" in e for e in validate_row({**self.row, "question": question})), question)
+
+    def test_unanswerable_rows_must_say_so(self):
+        bad = {**self.row, "type": "unanswerable"}
+        self.assertTrue(validate_row(bad))
+
+    def test_duplicates_are_reported(self):
+        twin = {**self.row, "id": "x2", "question": "what is  the CAP?"}
+        problems = validate_dataset([self.row, twin, self.row])
+        self.assertTrue(any("duplicate question" in problem for problem in problems))
+        self.assertTrue(any("duplicate id" in problem for problem in problems))
+
+
+class EvalMetricTests(unittest.TestCase):
+    def test_key_facts_accept_alternatives_and_number_formats(self):
+        self.assertTrue(eval_metrics.fact_present("It costs 4,900 USD a month.", "4900"))
+        self.assertTrue(eval_metrics.fact_present("Charging takes 2h15.", "2 hours 15 minutes|2h15"))
+        self.assertFalse(eval_metrics.fact_present("Charging takes two hours.", "2 hours 15 minutes|2h15"))
+
+    def test_short_facts_match_whole_tokens(self):
+        self.assertTrue(eval_metrics.fact_present("Ramps up to 6 percent.", "6"))
+        self.assertFalse(eval_metrics.fact_present("Ramps up to 16 percent.", "6"))
+        self.assertFalse(eval_metrics.fact_present("It weighs 6.5 kg.", "6"))
+        self.assertTrue(eval_metrics.fact_present("No, it has not.", "no"))
+        self.assertFalse(eval_metrics.fact_present("Nobody knows.", "no"))
+
+    def test_ranking_metrics(self):
+        self.assertEqual(eval_metrics.reciprocal_rank(2), 0.5)
+        self.assertEqual(eval_metrics.hit_at_k(6, 5), 0.0)
+        self.assertAlmostEqual(eval_metrics.ndcg_at_k([1], 1, 5), 1.0)
+        self.assertLess(eval_metrics.ndcg_at_k([3], 1, 5), 1.0)
+
+    def test_abstention_scores(self):
+        scores = eval_metrics.binary_scores([True, False, True], [True, True, False])
+        self.assertEqual((scores["tp"], scores["fn"], scores["fp"]), (1, 1, 1))
+        self.assertEqual(scores["precision"], 0.5)
+
+    def test_paired_delta_flags_a_consistent_drop(self):
+        before = {f"q{i}": 1.0 for i in range(40)}
+        after = {**before, **{f"q{i}": 0.0 for i in range(10)}}
+        delta = eval_metrics.paired_delta(after, before)
+        self.assertEqual(delta["delta"], -0.25)
+        self.assertTrue(delta["significant"])
+        self.assertFalse(eval_metrics.paired_delta(before, before)["significant"])
+
+
+class EvalGateTests(unittest.TestCase):
+    def _records(self, hits):
+        return [
+            {"id": f"q{i}", "type": "factual", "tags": [], "answerable": True, "scores": {"hit_at_5": h, "rr": h},
+             "latencies_ms": {"total": 10.0}, "cost_usd": 0.0}
+            for i, h in enumerate(hits)
+        ]
+
+    def test_absolute_floor_and_regression(self):
+        current = self._records([1.0] * 8 + [0.0] * 2)
+        summary = aggregate(current, generate=False)
+        self.assertEqual(summary["retrieval"]["hit_at_5"], 0.8)
+        gates = {"min": {"retrieval.hit_at_5": 0.75}, "max_drop": {"retrieval.hit_at_5": 0.02}}
+        baseline = {
+            "metrics": aggregate(self._records([1.0] * 10), generate=False),
+            "per_question": {f"q{i}": {"hit_at_5": 1.0} for i in range(10)},
+        }
+        questions = {r["id"]: {"hit_at_5": r["scores"]["hit_at_5"]} for r in current}
+        gate = evaluate_gates(summary, gates, baseline=baseline, current_questions=questions,
+                              comparable=True, deterministic=True)
+        self.assertTrue(gate["checks"][0]["passed"])
+        self.assertFalse(gate["regressions"][0]["passed"])
+        self.assertFalse(gate["passed"])
+        no_baseline = evaluate_gates(summary, gates, baseline=None, current_questions=questions,
+                                     comparable=False, deterministic=True)
+        self.assertTrue(no_baseline["passed"])
+
+
+
+class AnswerShapeTests(unittest.TestCase):
+    def test_refusals_are_recognised_from_the_opening_only(self):
+        self.assertTrue(is_refusal("I cannot tell from the documents. Revenue was 38.6 million USD [1]."))
+        self.assertTrue(is_refusal("The documents do not name the vendor [1]."))
+        self.assertFalse(is_refusal("The Tern-3 weighs 168 kg [1]. The documents do not mention the Tern-4."))
+        self.assertFalse(is_refusal("No, I could not find any exclusive contract; none exists [1]."))
+
+    def test_numbers_may_come_from_headings_or_the_question(self):
+        contexts = [{"text": "Economy is required under 8 hours.", "document_name": "travel_policy_2026.md",
+                     "header_context": "Travel Policy 2026 > Flights"}]
+        self.assertEqual(deterministic_violations("Under the 2026 policy, flights under 8 hours are economy [1].", contexts, min_quote_chars=8), [])
+        self.assertEqual(deterministic_violations("On 14 March, flights under 8 hours were economy [1].", contexts,
+                                                  min_quote_chars=8, question="What applied on 14 March?"), [])
+        self.assertTrue(deterministic_violations("Flights under 19 hours are economy [1].", contexts, min_quote_chars=8))
 
 
 if __name__ == "__main__":

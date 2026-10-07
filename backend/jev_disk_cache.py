@@ -11,11 +11,13 @@ import json
 import os
 import sqlite3
 import threading
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from paths import data_path
 
 JEV_PROMPT_VERSION = os.getenv("JEV_PROMPT_VERSION", "relevance_rerank_v1").strip() or "relevance_rerank_v1"
 
-DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "chroma_store", "jev_score_cache.sqlite")
+DEFAULT_PATH = data_path("chroma_store", "jev_score_cache.sqlite")
 
 
 def query_hash(query: str) -> str:

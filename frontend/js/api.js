@@ -1,6 +1,15 @@
+export class ApiError extends Error {
+  constructor(message, status, detail) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 export const errorMessage = (data, fallback = "Request failed") => {
   const detail = data?.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail) && typeof detail.message === "string") return detail.message;
   if (Array.isArray(detail)) {
     const text = detail
       .map((item) => (typeof item === "string" ? item : item?.msg))
@@ -17,7 +26,7 @@ const json = async (url, options = {}) => {
     ...options,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(errorMessage(data));
+  if (!response.ok) throw new ApiError(errorMessage(data), response.status, data?.detail);
   return data;
 };
 
@@ -32,7 +41,10 @@ export const api = {
   updateDocument: (id, body) => json(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteDocument: (id) => json(`/api/documents/${id}`, { method: "DELETE" }),
   index: () => json("/api/index"),
-  refreshIndex: () => json("/api/index/refresh", { method: "POST", body: "{}" }),
+  refreshIndex: (override = false) =>
+    json(`/api/index/refresh${override ? "?publish_override=true" : ""}`, { method: "POST", body: "{}" }),
+  indexVersions: () => json("/api/index/versions"),
+  evalLatest: () => json("/api/eval/latest"),
   rollbackIndex: () => json("/api/index/rollback", { method: "POST", body: "{}" }),
   reconcileIndex: () => json("/api/index/reconcile", { method: "POST", body: "{}" }),
   analytics: (days) => json(`/api/analytics?days=${days}`),

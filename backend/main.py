@@ -6,7 +6,7 @@ import re
 import shutil
 import time
 from collections import defaultdict
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,19 +15,24 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from rag_engine import (
+    CHUNKING_STRATEGIES,
     NeedleError,
+    PipelineOptions,
+    PublishBlocked,
     delete_document,
     document_passages,
+    embedding_dimensions,
     env_defaults,
-    generate_answer_stream,
     get_all_documents,
     index_status,
-    condense_query,
+    list_index_versions,
+    orphaned_documents,
     process_document,
     refresh_active_index,
     rollback_index,
+    run_pipeline,
 )
-from pipeline_logic import needs_condense
+from paths import data_path
 from workspace import WorkspaceStore
 
 logging.basicConfig(level=logging.INFO)
@@ -37,10 +42,11 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".text", ".docx", ".pptx", ".xlsx", ".csv"}
 ROOT = os.path.dirname(__file__)
 FRONTEND_DIR = os.path.join(ROOT, "..", "frontend")
-UPLOAD_DIR = os.path.join(ROOT, "uploads")
+UPLOAD_DIR = data_path("uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-workspace = WorkspaceStore(os.path.join(ROOT, "workspace.db"))
+workspace = WorkspaceStore(data_path("workspace.db"))
+EVAL_REPORTS_DIR = os.path.join(ROOT, "eval", "reports")
 _hits: dict = defaultdict(list)
 
 app = FastAPI(title="Needle", description="Source-grounded knowledge workspace", version="2.0.0")
@@ -52,6 +58,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+# Handlers below are plain `def` on purpose. They call SQLite, Chroma, the
+# embedder, and OpenRouter synchronously; FastAPI runs `def` handlers in a
+# thread pool, so a long upload or refresh no longer freezes every other request.
 
 
 class ChatRequest(BaseModel):
@@ -68,16 +78,16 @@ class SettingsPayload(BaseModel):
     timezone: str = "UTC"
     show_traces: bool = True
     allow_downloads: bool = True
-    answer_length: str = "Balanced"
-    citation_style: str = "Inline numbered"
+    answer_length: Literal["Concise", "Balanced", "Detailed"] = "Balanced"
+    citation_style: Literal["Inline numbered", "Footnotes", "Source cards"] = "Inline numbered"
     require_citations: bool = True
     withhold_ungrounded: bool = True
-    top_k: int = 30
-    similarity_threshold: float = 0.30
-    max_parents: int = 5
-    rrf_k: int = 60
+    top_k: int = Field(30, ge=1, le=100)
+    similarity_threshold: float = Field(0.30, ge=0, le=1)
+    max_parents: int = Field(5, ge=1, le=12)
+    rrf_k: int = Field(60, ge=1, le=200)
     contextual_embeddings: bool = True
-    chunking: Optional[str] = None
+    chunking: Optional[Literal[CHUNKING_STRATEGIES]] = None
 
 
 class PolicyPayload(BaseModel):
@@ -142,6 +152,7 @@ def _documents():
                 "name": job["filename"],
                 "chunk_count": 0,
                 "max_page": 0,
+                "uploaded_at": job["created_at"],
                 "collection": "General",
                 "included": True,
                 "citation_required": True,
@@ -159,7 +170,7 @@ async def serve_frontend():
 
 
 @app.get("/health")
-async def health_check():
+def health_check():
     return {"status": "healthy", "service": "Needle", **index_status()}
 
 
@@ -180,29 +191,29 @@ def _settings_with_drift():
 
 
 @app.get("/api/settings")
-async def read_settings():
+def read_settings():
     return _settings_with_drift()
 
 
 @app.put("/api/settings")
-async def write_settings(payload: SettingsPayload):
+def write_settings(payload: SettingsPayload):
     workspace.save_settings(payload.model_dump())
     workspace.record_run("Settings updated", "Workspace preferences saved", "Success")
     return _settings_with_drift()
 
 
 @app.get("/api/conversations")
-async def read_conversations(q: str = ""):
+def read_conversations(q: str = ""):
     return {"conversations": workspace.list_conversations(q)}
 
 
 @app.post("/api/conversations")
-async def create_conversation():
+def create_conversation():
     return workspace.create_conversation()
 
 
 @app.get("/api/conversations/{conversation_id}")
-async def read_conversation(conversation_id: str):
+def read_conversation(conversation_id: str):
     messages = workspace.messages(conversation_id)
     if not messages and not any(item["id"] == conversation_id for item in workspace.list_conversations()):
         raise HTTPException(status_code=404, detail="Conversation not found.")
@@ -210,19 +221,19 @@ async def read_conversation(conversation_id: str):
 
 
 @app.post("/api/messages/{message_id}/feedback")
-async def save_feedback(message_id: str, payload: FeedbackPayload):
+def save_feedback(message_id: str, payload: FeedbackPayload):
     if not workspace.set_feedback(message_id, payload.rating):
         raise HTTPException(status_code=400, detail="Feedback could not be saved for that answer.")
     return {"ok": True, "rating": payload.rating}
 
 
 @app.get("/api/members")
-async def read_members():
+def read_members():
     return {"members": workspace.list_members()}
 
 
 @app.post("/api/members")
-async def invite_member(payload: InvitePayload):
+def invite_member(payload: InvitePayload):
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", payload.email.strip()):
         raise HTTPException(status_code=400, detail="Enter a valid email address.")
     try:
@@ -235,7 +246,7 @@ async def invite_member(payload: InvitePayload):
 
 
 @app.get("/api/integrations")
-async def read_integrations():
+def read_integrations():
     return {
         "integrations": [
             {"id": "files", "name": "File upload", "connected": True, "detail": "PDF, Word, text, slides, and spreadsheets"},
@@ -247,7 +258,7 @@ async def read_integrations():
 
 
 @app.post("/api/workspace/reset")
-async def reset_workspace(payload: ResetPayload):
+def reset_workspace(payload: ResetPayload):
     if payload.confirm != "DELETE":
         raise HTTPException(status_code=400, detail="Type DELETE to remove the workspace data.")
     for document in get_all_documents():
@@ -263,7 +274,7 @@ async def reset_workspace(payload: ResetPayload):
 
 
 @app.get("/api/index")
-async def read_index():
+def read_index():
     status = index_status()
     documents = _documents()
     indexed = [doc for doc in documents if doc["status"] == "indexed"]
@@ -273,17 +284,41 @@ async def read_index():
         "chunks": sum(doc["chunk_count"] or 0 for doc in indexed),
         "storage_bytes": sum(doc["bytes"] or 0 for doc in indexed),
         "runs": workspace.recent_runs(),
-        "embedding_dimensions": 384,
+        "embedding_dimensions": embedding_dimensions(),
+        "stats": workspace.pipeline_stats(),
     }
 
 
+@app.get("/api/index/versions")
+def read_index_versions():
+    return {"versions": list_index_versions()}
+
+
+def _eval_summary(suite: str) -> Optional[dict]:
+    path = os.path.join(EVAL_REPORTS_DIR, suite, "latest.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return {key: report.get(key) for key in ("suite", "tier", "finished_at", "commit", "questions", "metrics", "gate")}
+
+
+@app.get("/api/eval/latest")
+def read_latest_eval():
+    """Summaries of the most recent eval runs (written by `python -m eval`)."""
+    return {"hermetic": _eval_summary("hermetic"), "workspace": _eval_summary("workspace")}
+
+
 @app.post("/api/index/refresh")
-async def refresh_index(publish_override: bool = False):
+def refresh_index(publish_override: bool = False):
     started = time.perf_counter()
     if publish_override:
         workspace.record_run(
             "Publish override",
-            "Explicit publish_override bypassed the minimum golden-set gate for this handoff.",
+            "Publish override requested: the minimum golden-set size check is skipped for this handoff.",
             "Warning",
         )
         log.warning("Index refresh running with publish_override=true")
@@ -297,18 +332,22 @@ async def refresh_index(publish_override: bool = False):
         }
         status = refresh_active_index(
             style,
-            os.getenv("CHUNKING_STRATEGY", "Parent-child"),
+            settings["chunking"],
             hashes,
             publish_override=publish_override,
         )
+    except PublishBlocked as exc:
+        workspace.record_run("Version handoff", str(exc), "Blocked")
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "overridable": exc.overridable},
+        ) from exc
     except NeedleError as exc:
         workspace.record_run("Version handoff", str(exc), "Failed")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         log.exception("Index refresh failed")
-        detail = str(exc) if "golden" in str(exc).lower() or "recall" in str(exc).lower() else (
-            "Index refresh failed before the new version was published."
-        )
+        detail = "Index refresh failed before the new version was published."
         workspace.record_run("Version handoff", detail, "Failed")
         raise HTTPException(status_code=500, detail=detail) from exc
     elapsed = int((time.perf_counter() - started) * 1000)
@@ -320,14 +359,14 @@ async def refresh_index(publish_override: bool = False):
 
 
 @app.get("/api/analytics")
-async def read_analytics(days: int = 30):
+def read_analytics(days: int = 30):
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=400, detail="Choose 7, 30, or 90 days.")
     return workspace.analytics(days)
 
 
 @app.get("/api/analytics/export")
-async def export_analytics(days: int = 30):
+def export_analytics(days: int = 30):
     report = workspace.analytics(days if days in {7, 30, 90} else 30)
     lines = ["day,questions,grounded"]
     for point in report["series"]:
@@ -340,12 +379,12 @@ async def export_analytics(days: int = 30):
 
 
 @app.post("/api/upload")
-async def upload_document(file: UploadFile = File(...)):
+def upload_document(file: UploadFile = File(...)):
     filename = os.path.basename(file.filename or "document")
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Upload a PDF, Word, text, slides, or spreadsheet file.")
-    file_bytes = await file.read()
+    file_bytes = file.file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     if len(file_bytes) > MAX_UPLOAD_BYTES:
@@ -366,7 +405,7 @@ async def upload_document(file: UploadFile = File(...)):
         doc = process_document(file_bytes, filename, file.content_type or "", content_hash=digest)
     except Exception as exc:
         log.exception("Upload failed")
-        message = str(exc) if isinstance(exc, ValueError) else "The file could not be indexed."
+        message = str(exc) if isinstance(exc, (ValueError, NeedleError)) else "The file could not be indexed."
         workspace.update_job(job_id, "failed", message)
         workspace.record_run("Ingestion", f"{filename} failed", "Failed")
         raise HTTPException(status_code=400, detail=message) from exc
@@ -393,22 +432,21 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @app.get("/api/documents")
-async def list_documents():
+def list_documents():
     return {"documents": _documents()}
 
 
 @app.get("/api/documents/{document_id}")
-async def read_document(document_id: str):
+def read_document(document_id: str):
     match = next((doc for doc in _documents() if doc["id"] == document_id and doc["status"] == "indexed"), None)
     if not match:
         raise HTTPException(status_code=404, detail="Document not found.")
     passages = document_passages(document_id)
-    preview = "\n\n".join(item["text"] for item in passages[:6])
-    return {**match, "passages": passages[:12], "preview": preview[:8000]}
+    return {**match, "passages": passages[:40], "passage_count": len(passages)}
 
 
 @app.patch("/api/documents/{document_id}")
-async def update_document(document_id: str, payload: PolicyPayload):
+def update_document(document_id: str, payload: PolicyPayload):
     if not any(doc["id"] == document_id for doc in get_all_documents()):
         raise HTTPException(status_code=404, detail="Document not found.")
     if not workspace.policy(document_id):
@@ -418,7 +456,7 @@ async def update_document(document_id: str, payload: PolicyPayload):
 
 
 @app.get("/api/documents/{document_id}/file")
-async def download_document(document_id: str):
+def download_document(document_id: str):
     if not workspace.settings()["allow_downloads"]:
         raise HTTPException(status_code=403, detail="Source downloads are turned off in settings.")
     path = _stored_path(document_id)
@@ -429,7 +467,7 @@ async def download_document(document_id: str):
 
 
 @app.delete("/api/documents/{document_id}")
-async def remove_document(document_id: str):
+def remove_document(document_id: str):
     if not any(doc["id"] == document_id for doc in get_all_documents()):
         raise HTTPException(status_code=404, detail="Document not found.")
     workspace.tombstone(document_id)
@@ -445,7 +483,7 @@ async def remove_document(document_id: str):
 
 
 @app.post("/api/index/rollback")
-async def rollback():
+def rollback():
     restored = rollback_index()
     if not restored:
         raise HTTPException(status_code=409, detail="There is no earlier index version to restore.")
@@ -454,7 +492,7 @@ async def rollback():
 
 
 @app.post("/api/index/reconcile")
-async def reconcile():
+def reconcile():
     removed = 0
     live = {doc["id"] for doc in get_all_documents()}
     for doc_id, policy in workspace.policies().items():
@@ -467,12 +505,16 @@ async def reconcile():
         if not policy or policy.get("deleted"):
             os.remove(os.path.join(UPLOAD_DIR, name))
             removed += 1
-    workspace.record_run("Reconcile", f"Removed {removed} orphaned records", "Success")
-    return {"removed": removed}
+    orphans = orphaned_documents()
+    note = f"Removed {removed} orphaned records"
+    if orphans:
+        note += f"; {len(orphans)} indexed document(s) have no catalog entry"
+    workspace.record_run("Reconcile", note, "Success")
+    return {"removed": removed, "orphaned_documents": orphans}
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest):
+def chat(request: ChatRequest):
     _allow("chat")
     query = request.query.strip()
     if not query:
@@ -481,88 +523,105 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Question is too long.")
     settings = workspace.settings()
     conversation_id = workspace.ensure_conversation(request.conversation_id, query, request.document_id)
-    history = workspace.messages(conversation_id)
-    rewritten = None
-    search_query = query
-    if needs_condense(history):
-        try:
-            rewritten = condense_query(history, query)
-            search_query = rewritten or query
-        except NeedleError as exc:
-            log.warning("Query rewrite skipped: %s", exc)
-    workspace.add_message(conversation_id, "user", query, original_query=query, rewritten_query=rewritten)
-    started = time.perf_counter()
+    history = [
+        {"role": message["role"], "content": message["content"]}
+        for message in workspace.messages(conversation_id)
+    ]
+    user_message_id = workspace.add_message(conversation_id, "user", query, original_query=query)
+    options = PipelineOptions(
+        top_k=settings["top_k"],
+        similarity_threshold=settings["similarity_threshold"],
+        rrf_k=settings["rrf_k"],
+        max_parents=settings["max_parents"],
+        answer_length=settings["answer_length"],
+        require_citations=settings["require_citations"],
+        citation_style=settings["citation_style"],
+        withhold_ungrounded=settings["withhold_ungrounded"],
+    )
 
     def event_stream():
         answer = []
         sources = []
         validation = None
         trace = None
-        withheld = False
+        result = {}
         failed = None
-        yield f"data: {json.dumps({'type': 'conversation', 'id': conversation_id})}\n\n"
+        yield _sse({"type": "conversation", "id": conversation_id})
         try:
-            for data in generate_answer_stream(
-                query=search_query,
+            for event in run_pipeline(
+                query,
+                history=history,
                 document_id=request.document_id,
-                top_k=settings["top_k"],
-                similarity_threshold=settings["similarity_threshold"],
-                rrf_k=settings["rrf_k"],
-                original_query=query,
-                max_parents=settings["max_parents"],
                 exclude_document_ids=workspace.excluded_document_ids(),
-                answer_length=settings["answer_length"],
-                require_citations=settings["require_citations"],
-                citation_style=settings["citation_style"],
-                withhold_ungrounded=settings["withhold_ungrounded"],
+                citation_required_ids=workspace.citation_required_ids(),
+                options=options,
             ):
-                payload = json.loads(data)
-                if payload.get("type") == "chunk":
-                    answer.append(payload.get("content") or "")
-                elif payload.get("type") == "sources":
-                    sources = payload.get("data") or []
-                elif payload.get("type") == "validation":
-                    validation = payload
-                    withheld = not payload.get("passed") and settings["withhold_ungrounded"]
-                elif payload.get("type") == "trace":
-                    trace = payload
-                elif payload.get("type") == "error":
-                    failed = payload.get("content")
-                yield f"data: {data}\n\n"
+                kind = event.get("type")
+                if kind == "result":
+                    result = event
+                    continue
+                if kind == "chunk":
+                    answer.append(event.get("content") or "")
+                elif kind == "sources":
+                    sources = event.get("data") or []
+                elif kind == "validation":
+                    validation = event
+                elif kind == "trace":
+                    trace = event
+                elif kind == "error":
+                    failed = event.get("content")
+                yield _sse(event)
         except Exception:
             log.exception("Chat stream failed")
             failed = "The answer pipeline failed."
-            yield f"data: {json.dumps({'type': 'error', 'content': failed})}\n\n"
+            yield _sse({"type": "error", "content": failed})
+        standalone = ((result.get("retrieval") or {}).get("standalone_query") or "").strip()
+        if standalone and standalone != query:
+            workspace.set_rewritten_query(user_message_id, standalone)
+        latencies = result.get("latencies_ms") or {}
+        if trace is not None:
+            # The trace event goes out before the answer is written; store the final timings.
+            trace = {**trace, "latencies_ms": latencies or trace.get("latencies_ms")}
         content = "".join(answer) or (failed or "")
         message_id = workspace.add_message(conversation_id, "assistant", content, sources, validation, trace)
-        best = None
-        if sources:
-            scores = [source.get("vector_similarity") for source in sources if source.get("vector_similarity") is not None]
-            best = max(scores) if scores else None
-        kept_count = (trace or {}).get("kept_count")
-        if validation and validation.get("passed"):
+        scores = [source.get("vector_similarity") for source in sources if source.get("vector_similarity") is not None]
+        category = result.get("reject_category")
+        if result.get("passed") and not result.get("declined"):
             outcome = "answered"
-        elif kept_count:
-            outcome = "check_failed"
-        else:
+        elif result.get("declined"):
             outcome = "no_coverage"
+        elif failed or category in {"infra_error", "pipeline_error"}:
+            outcome = "error"
+        elif category in {"retrieval_abstain", "empty_question", "injection_scan"}:
+            outcome = "no_coverage"
+        else:
+            outcome = "check_failed"
+        released = bool(result.get("released"))
         workspace.record_event(
             query=query,
-            grounded=bool(validation and validation.get("passed")),
-            withheld=withheld or bool(failed),
+            grounded=bool(result.get("passed")) and not result.get("declined"),
+            withheld=not released or bool(result.get("declined")),
             outcome=outcome,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            source_count=len(sources),
-            best_similarity=best,
+            latency_ms=int(latencies.get("total") or 0),
+            retrieval_ms=int((latencies.get("retrieve") or 0) + (latencies.get("rerank") or 0)),
+            source_count=len(sources) if released else 0,
+            best_similarity=max(scores) if scores else None,
+            relevance=(result.get("retrieval") or {}).get("relevance"),
+            cited=released and bool(re.search(r"\[\d+\]", content)),
             candidate_count=(trace or {}).get("candidates") or 0,
+            reject_category=category,
         )
-        yield f"data: {json.dumps({'type': 'saved', 'message_id': message_id, 'conversation_id': conversation_id})}\n\n"
+        yield _sse({"type": "saved", "message_id": message_id, "conversation_id": conversation_id})
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
+
+
+def _sse(payload) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
 
 
 if __name__ == "__main__":

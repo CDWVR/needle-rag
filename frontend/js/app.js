@@ -1,4 +1,4 @@
-import { api, errorMessage } from "./api.js";
+import { api, ApiError, errorMessage } from "./api.js";
 
 const $ = (sel) => document.querySelector(sel);
 const state = {
@@ -91,7 +91,34 @@ const fileKind = (name) => {
   return "TXT";
 };
 
-const percent = (value) => `${Math.round(Number(value || 0) * 1000) / 10}%`;
+const percent = (value) => (value == null ? "—" : `${Math.round(Number(value) * 1000) / 10}%`);
+
+const seconds = (ms) => (ms == null ? "" : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)}s`);
+
+const isToday = (iso) => {
+  const date = new Date(iso || "");
+  return !Number.isNaN(date.getTime()) && date.toDateString() === new Date().toDateString();
+};
+
+const clock = (iso) => {
+  const date = new Date(iso || "");
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+};
+
+const shortDay = (iso) => {
+  const date = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString([], { month: "short", day: "2-digit" }).toUpperCase();
+};
+
+// Change against the previous period, phrased the way the stat cards read: "↑ 3.2 pts from prior period".
+const delta = (current, prior, { points = true, invert = false } = {}) => {
+  if (current == null || prior == null) return "";
+  const diff = (Number(current) - Number(prior)) * (points ? 100 : 1);
+  if (Math.abs(diff) < 0.05) return "No change from prior period";
+  const up = diff > 0;
+  const good = invert ? !up : up;
+  return `<span class="${good ? "" : "stat-bad"}">${up ? "↑" : "↓"} ${Math.abs(diff).toFixed(1)}${points ? " pts" : ""}</span> from prior period`;
+};
 
 const optionList = (values, current) => {
   const list = [...values];
@@ -124,8 +151,13 @@ function setInspector(open) {
   $("#sourceToggle").setAttribute("aria-expanded", open ? "true" : "false");
 }
 
-function showPage(page) {
+function showPage(page, { updateHash = true } = {}) {
+  if (!pageLabels[page]) page = "ask";
   state.page = page;
+  if (updateHash) {
+    const hash = page === "document" && state.activeDocumentId ? `#document/${state.activeDocumentId}` : `#${page}`;
+    if (location.hash !== hash) history.pushState(null, "", hash);
+  }
   $("#app").classList.toggle("subpage", page !== "ask");
   document.querySelectorAll(".workspace-page").forEach((view) => view.classList.toggle("active", view.dataset.view === page));
   document.querySelectorAll(".rail [data-page]").forEach((button) => {
@@ -140,7 +172,16 @@ function showPage(page) {
   if (page === "pipeline") renderPipeline().catch((err) => notify(err.message));
   if (page === "analytics") renderAnalytics().catch((err) => notify(err.message));
   if (page === "settings") renderSettings().catch((err) => notify(err.message));
+  document.querySelector(`#page-${page}`)?.scrollTo(0, 0);
 }
+
+function routeFromHash() {
+  const [page, id] = location.hash.replace(/^#/, "").split("/");
+  if (page === "document" && id) state.activeDocumentId = decodeURIComponent(id);
+  showPage(page || "ask", { updateHash: false });
+}
+
+window.addEventListener("popstate", routeFromHash);
 
 async function ensureSettings() {
   if (!state.settings) state.settings = await api.settings();
@@ -183,15 +224,22 @@ function renderThreads() {
     list.innerHTML = `<p class="empty-note">No conversations yet. Ask a question to start one.</p>`;
     return;
   }
-  list.innerHTML = items
-    .map(
-      (thread) => `
+  const row = (thread) => {
+    const sourced = Number(thread.source_threads) || 0;
+    const meta = [when(thread.updated_at).toUpperCase(), sourced ? `${sourced} SOURCED` : ""].filter(Boolean).join(" · ");
+    return `
       <button type="button" class="thread ${thread.id === state.conversationId ? "active" : ""}" data-id="${thread.id}">
         <strong>${escapeHtml(thread.title)}</strong>
-        <small>${escapeHtml(when(thread.updated_at).toUpperCase())}</small>
-      </button>`
-    )
-    .join("");
+        <small>${escapeHtml(meta)}</small>
+      </button>`;
+  };
+  const today = items.filter((thread) => isToday(thread.updated_at));
+  const earlier = items.filter((thread) => !isToday(thread.updated_at));
+  const group = (label, threads) =>
+    threads.length
+      ? `<div class="thread-label"><span class="section-eyebrow">${label}</span></div>${threads.map(row).join("")}`
+      : "";
+  list.innerHTML = group("Today", today) + group("Previous", earlier);
   list.querySelectorAll(".thread").forEach((button) => {
     listen(button, "click", () => openConversation(button.dataset.id));
   });
@@ -276,6 +324,8 @@ function renderConversation() {
     .filter(({ itemIndex }) => itemIndex !== index);
   const validation = assistant?.validation || {};
   const sources = assistant?.sources || [];
+  const elapsed = assistant?.trace?.latencies_ms?.total;
+  const callout = answerCallout(assistant, validation);
   const history = earlier.length
     ? `<div class="turn-history">${earlier
         .map(
@@ -288,22 +338,24 @@ function renderConversation() {
     ? renderAnswerHtml(assistant.content || "")
     : `<p class="empty-note">No answer was stored for this question.</p>`;
   const sessionTitle = activeConversationTitle();
-  const asked = question?.content
+  const asked = question?.content && question.content.trim() !== sessionTitle.trim()
     ? `<p class="user-prompt"><span class="section-eyebrow">You asked</span>${escapeHtml(question.content)}</p>`
     : "";
   root.innerHTML = `
     ${history}
-    <div class="answer-kicker"><span>${assistant ? (validation.passed ? "Grounded answer" : "Answer") : "Question"}</span></div>
+    <div class="answer-kicker"><span>${assistant ? (validation.declined ? "Not in your sources" : validation.passed ? "Grounded answer" : "Answer") : "Question"}</span></div>
     <h2 class="query-title">${escapeHtml(sessionTitle)}</h2>
     ${asked}
     <div class="meta-line">
-      <span class="meta-chip ${validation.passed ? "good" : ""}">${assistant ? (validation.passed ? "GROUNDED" : "CHECK FAILED") : "WAITING"}</span>
+      <span class="meta-chip ${validation.passed && !validation.declined ? "good" : ""}">${assistant ? (validation.declined ? "NOT IN SOURCES" : validation.passed ? "GROUNDED" : validation.reject_category === "retrieval_abstain" ? "NO EVIDENCE" : "CHECK FAILED") : "WAITING"}</span>
       ${validation.confidence ? `<span class="meta-chip">${escapeHtml(String(validation.confidence).toUpperCase())} CONFIDENCE</span>` : ""}
       ${validation.degraded ? `<span class="meta-chip">DEGRADED</span>` : ""}
       ${validation.partially_supported ? `<span class="meta-chip">PARTIAL</span>` : ""}
       <span class="meta-chip">${sources.length} SOURCE${sources.length === 1 ? "" : "S"}</span>
+      ${elapsed ? `<span class="meta-chip">${escapeHtml(seconds(elapsed))}</span>` : ""}
     </div>
     <article class="answer" id="answer">${body}</article>
+    ${callout}
     ${
       assistant
         ? `<div class="answer-actions">
@@ -312,7 +364,7 @@ function renderConversation() {
         <button class="mini-action ${assistant.rating === "helpful" ? "active" : ""}" id="helpful" type="button" aria-pressed="${assistant.rating === "helpful"}" aria-label="Helpful answer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M7 10v12H3V10h4zM7 20h10a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 18.4 9H14l1-4c.4-1.8-2-2.8-3-1.2L7 10z"/></svg></button>
         <button class="mini-action ${assistant.rating === "unhelpful" ? "active" : ""}" id="unhelpful" type="button" aria-pressed="${assistant.rating === "unhelpful"}" aria-label="Unhelpful answer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M17 14V2h4v12h-4zM17 4H7a2 2 0 0 0-2 1.6l-1.4 7A2 2 0 0 0 5.6 15H10l-1 4c-.4 1.8 2 2.8 3 1.2l5-6.2z"/></svg></button>
       </div>
-      <span class="verified">${validation.passed ? "validation passed" : escapeHtml(validation.reason || "withheld")}</span>
+      <span class="verified">${validation.passed ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 12 2 2 4-5"/><circle cx="12" cy="12" r="9"/></svg> validation passed` : "not released as grounded"}</span>
     </div>`
         : ""
     }`;
@@ -335,6 +387,64 @@ function renderConversation() {
   renderInspector(assistant);
 }
 
+const calloutCopy = {
+  retrieval_abstain: ["No strong evidence", "Jev did not keep any passage as evidence for this question. The closest passages are listed as related, not as sources."],
+  injection_scan: ["Passages excluded", "The matching passages contained text that reads like instructions to the assistant, so they were not used."],
+  checker_ungrounded: ["Draft withheld", "The draft made claims the cited passages do not support."],
+  checker_irrelevant: ["Draft withheld", "The draft did not answer the question that was asked."],
+  checker_unsafe: ["Draft withheld", "The grounding check flagged the draft as unsafe."],
+  checker_unparseable: ["Check unavailable", "The grounding check did not return a readable verdict, so the draft was withheld."],
+  all_sentences_dropped: ["Draft withheld", "Too little of the draft was supported by the passages."],
+  empty_draft: ["No draft", "The answer model returned an empty draft."],
+};
+
+function answerCallout(message, validation) {
+  if (!message) return "";
+  let title = "";
+  let text = "";
+  const category = String(validation.reject_category || "");
+  if (validation.declined) {
+    title = "The documents do not answer this";
+    text = "The answer below says what the sources do and do not cover. Add a source if this question should be answerable.";
+  } else if (validation.passed && validation.partially_supported) {
+    title = "Trimmed to what the sources support";
+    text = "Some sentences of the draft were removed because the passages did not support them.";
+  } else if (!validation.passed && category.startsWith("deterministic:")) {
+    title = "Draft withheld";
+    text = validation.reason || "The draft cited a passage, number, or quotation that is not in the sources.";
+  } else if (!validation.passed && calloutCopy[category]) {
+    [title, text] = calloutCopy[category];
+  } else if (!validation.passed && message.validation) {
+    title = "Not released as grounded";
+    text = validation.reason || "The draft did not pass the grounding, safety, and relevance check.";
+  }
+  if (validation.degraded) {
+    title = title || "Reduced confidence";
+    text = `${text ? `${text} ` : ""}Jev was unavailable, so passages were ranked by a fallback.`;
+  }
+  if (!title) return "";
+  return `<aside class="callout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 2 21h20L12 3z"/><path d="M12 9v5M12 18h.01"/></svg><div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(text)}</p></div></aside>`;
+}
+
+function traceFlow(trace, validation) {
+  const stages = [
+    ["Query", Boolean(trace.original_query || trace.retrieval_query)],
+    ["Search", trace.candidates != null],
+    ["Rerank", Boolean(trace.rerank_mode)],
+    ["Verify", Boolean(validation && validation.passed)],
+  ];
+  return `<div class="trace-flow">${stages
+    .map(([label, done], index) => `${index ? `<i class="trace-line ${done ? "done" : ""}"></i>` : ""}<div class="trace-node ${done ? "done" : ""}"><i class="node-dot"></i><span>${label}</span></div>`)
+    .join("")}</div>`;
+}
+
+function indexFoot() {
+  const index = state.index || {};
+  const chunks = state.documents.filter((doc) => doc.status === "indexed").reduce((sum, doc) => sum + (doc.chunk_count || 0), 0);
+  const healthy = index.compatible !== false;
+  return `<div class="index-foot"><div class="index-line"><strong>Index health</strong><span>${healthy ? `${chunks} CHUNKS · ${escapeHtml(String(index.version_id || "").slice(0, 8))}` : "REFRESH NEEDED"}</span></div><div class="progress"><i style="width:${healthy ? 100 : 30}%"></i></div></div>`;
+}
+
 function renderInspector(message) {
   const sources = message?.sources || [];
   const trace = message?.trace || {};
@@ -350,18 +460,19 @@ function renderInspector(message) {
   }
   const traceBlock = showTrace
     ? `<section class="trace">
-      <div class="trace-head"><span>Retrieval trace</span><span class="trace-time">${trace.candidates ?? 0} candidates</span></div>
+      <div class="trace-head"><span>Retrieval trace</span><span class="trace-time">${trace.latencies_ms?.total ? `${escapeHtml(seconds(trace.latencies_ms.total))} total` : `${trace.candidates ?? 0} candidates`}</span></div>
+      ${traceFlow(trace, message.validation)}
       <div class="trace-stats">
         <div><strong>${trace.candidates ?? 0} → ${trace.kept ?? sources.length}</strong><span>chunks retained</span></div>
         <div><strong>${Number(trace.similarity_threshold ?? state.settings?.similarity_threshold ?? 0).toFixed(2)}</strong><span>min similarity</span></div>
-        <div><strong>${escapeHtml(String(state.index?.version_id || "").slice(0, 8) || "—")}</strong><span>index version</span></div>
+        <div><strong>${escapeHtml(String(trace.version_id || state.index?.version_id || "").slice(0, 8) || "—")}</strong><span>index version</span></div>
       </div>
       <details><summary>View trace</summary><pre>${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>
     </section>`
     : "";
   body.innerHTML = `
     ${traceBlock}
-    <div class="source-title"><strong>Supporting sources</strong><span>${sources.length} MATCHES</span></div>
+    <div class="source-title"><strong>${sources.some((source) => source.relation === "related") ? "Related passages" : "Supporting sources"}</strong><span>${sources.length} MATCH${sources.length === 1 ? "" : "ES"}</span></div>
     <div class="source-list">
       ${
         sources.length
@@ -378,7 +489,8 @@ function renderInspector(message) {
               .join("")
           : `<p class="empty-note">No citation was kept for this answer.</p>`
       }
-    </div>`;
+    </div>
+    ${indexFoot()}`;
   body.querySelectorAll(".source").forEach((button) => {
     listen(button, "click", () => {
       body.querySelectorAll(".source").forEach((item) => item.classList.remove("active"));
@@ -579,6 +691,10 @@ async function renderKnowledge() {
   const processing = state.documents.filter((doc) => doc.status !== "indexed");
   const chunks = indexed.reduce((sum, doc) => sum + (doc.chunk_count || 0), 0);
   const storage = indexed.reduce((sum, doc) => sum + (doc.bytes || 0), 0);
+  const monthAgo = Date.now() - 30 * 24 * 3600 * 1000;
+  const recent = indexed.filter((doc) => new Date(doc.uploaded_at || 0).getTime() > monthAgo).length;
+  const collections = new Set(indexed.map((doc) => doc.collection || "General")).size;
+  const lastHandoff = state.index?.stats?.last_handoff_at;
   $("#page-knowledge").innerHTML = `
     <div class="page-content">
       <header class="page-header">
@@ -589,14 +705,14 @@ async function renderKnowledge() {
         </div>
       </header>
       <div class="stat-grid">
-        <article class="stat-card accent"><span>Total documents</span><div class="stat-value">${indexed.length}</div><small>${processing.length} still processing</small></article>
-        <article class="stat-card"><span>Indexed chunks</span><div class="stat-value">${chunks}</div><small>Active index</small></article>
+        <article class="stat-card accent"><span>Total documents</span><div class="stat-value">${indexed.length}</div><small class="stat-delta">${recent ? `+${recent} this month` : "None added this month"}${processing.length ? ` · ${processing.length} processing` : ""}</small></article>
+        <article class="stat-card"><span>Indexed chunks</span><div class="stat-value">${chunks.toLocaleString()}</div><small>Across ${collections} collection${collections === 1 ? "" : "s"}</small></article>
         <article class="stat-card"><span>Storage used</span><div class="stat-value">${bytes(storage)}</div><small>Original files kept locally</small></article>
-        <article class="stat-card dark"><span>Index status</span><div class="stat-value">${state.index?.compatible ? "Healthy" : "Check"}</div><small>${escapeHtml(state.index?.embedding_model || "")}</small></article>
+        <article class="stat-card dark"><span>Index status</span><div class="stat-value">${state.index?.compatible === false ? "Refresh" : "Healthy"}</div><small>${state.index?.compatible === false ? "Embedding model changed" : lastHandoff ? `Last handoff ${escapeHtml(when(lastHandoff).toLowerCase())}` : escapeHtml(state.index?.embedding_model || "")}</small></article>
       </div>
       <section class="panel">
         <div class="panel-head">
-          <div><h2>Documents</h2></div>
+          <div><h2>All documents</h2><p>Sources available to answers in this workspace</p></div>
           <div class="panel-tools">
             <label class="filter-field"><input id="documentSearch" value="${escapeHtml(state.docQuery)}" placeholder="Search documents" aria-label="Search documents" /></label>
             <div class="segmented" id="docFilter">
@@ -607,7 +723,7 @@ async function renderKnowledge() {
           </div>
         </div>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Document</th><th>Collection</th><th>Chunks</th><th>Status</th><th></th></tr></thead>
+          <table class="data-table"><thead><tr><th>Document</th><th>Collection</th><th>Chunks</th><th>Updated</th><th>Status</th><th></th></tr></thead>
           <tbody id="docRows"></tbody></table>
         </div>
       </section>
@@ -647,16 +763,17 @@ function paintDocuments() {
     const note = state.documents.length
       ? "No documents match this filter."
       : "No documents yet. Upload a file to index it.";
-    body.innerHTML = `<tr><td colspan="5"><p class="empty-note">${note}</p></td></tr>`;
+    body.innerHTML = `<tr><td colspan="6"><p class="empty-note">${note}</p></td></tr>`;
     return;
   }
   body.innerHTML = documents
     .map(
       (doc) => `<tr class="document-row" data-id="${escapeHtml(doc.id)}" data-status="${escapeHtml(doc.status || "")}">
-        <td><div class="file-cell"><div class="doc-icon">${fileKind(doc.name)}</div><div><strong>${escapeHtml(doc.name)}</strong><span>${bytes(doc.bytes)} · ${doc.max_page || 0} pages</span></div></div></td>
+        <td><div class="file-cell"><div class="doc-icon">${fileKind(doc.name)}</div><div><strong>${escapeHtml(doc.name)}</strong><span>${bytes(doc.bytes)} · ${doc.max_page || 0} page${doc.max_page === 1 ? "" : "s"}${doc.included === false ? " · excluded" : ""}</span></div></div></td>
         <td>${escapeHtml(doc.collection || "General")}</td>
         <td>${doc.chunk_count || "—"}</td>
-        <td><span class="status ${doc.status === "indexed" ? "" : "sync"}">${escapeHtml(doc.status || "unknown")}</span></td>
+        <td>${escapeHtml(doc.uploaded_at ? when(doc.uploaded_at) : "—")}</td>
+        <td><span class="status ${doc.status === "indexed" ? "" : "sync"}">${escapeHtml(statusLabel(doc))}</span></td>
         <td><button class="row-action" type="button" aria-label="Open ${escapeHtml(doc.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg></button></td>
       </tr>`
     )
@@ -664,6 +781,11 @@ function paintDocuments() {
   body.querySelectorAll(".document-row").forEach((row) => {
     listen(row, "click", () => openListedDocument(row.dataset.id));
   });
+}
+
+function statusLabel(doc) {
+  if (doc.status === "indexed") return doc.included === false ? "Excluded" : "Indexed";
+  return { queued: "Queued", processing: "Processing", failed: "Failed" }[doc.status] || String(doc.status || "Unknown");
 }
 
 function openListedDocument(id) {
@@ -698,39 +820,52 @@ async function renderDocument() {
     listen($("#backKnowledge"), "click", () => showPage("knowledge"));
     throw err;
   }
-  const passages = (doc.passages || []).slice(0, 8);
+  const passages = (doc.passages || []).slice(0, 12);
   page.innerHTML = `
     <div class="page-content">
       <header class="page-header">
         <div>
           <button class="btn small" id="backKnowledge" type="button">← Back to knowledge base</button>
-          <h1 style="font-size:46px">${escapeHtml(doc.name)}</h1>
-          <p>${escapeHtml(doc.collection || "General")} · ${doc.chunk_count || 0} chunks · ${doc.max_page || 0} pages</p>
+          <h1 style="font-size:46px">${escapeHtml(doc.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "))}</h1>
+          <p>${escapeHtml(doc.name)} · ${escapeHtml(doc.collection || "General")} collection · ${doc.chunk_count || 0} chunks · ${doc.max_page || 0} page${doc.max_page === 1 ? "" : "s"}${doc.uploaded_at ? ` · added ${escapeHtml(when(doc.uploaded_at).toLowerCase())}` : ""}</p>
         </div>
         <div class="page-actions">
           <button class="btn" id="replaceFile" type="button">Replace file</button>
-          <button class="btn dark" id="openOriginal" type="button">Open original</button>
+          <button class="btn dark" id="openOriginal" type="button" ${doc.downloadable && state.settings?.allow_downloads !== false ? "" : "disabled title=\"The original file is not available\""}>Open original ↗</button>
           <button class="btn danger" id="deleteDoc" type="button">Delete</button>
         </div>
       </header>
       <div class="doc-layout">
-        <article class="panel document-preview">${escapeHtml(doc.preview || "No extractable preview.").replace(/\n/g, "<br>")}</article>
+        <article class="panel document-preview" id="documentPreview">${documentPreview(doc.passages || [], doc.passage_count)}</article>
         <aside class="stack">
           <section class="panel">
             <div class="panel-head"><div><h2>Index record</h2><p>Saved with this document</p></div></div>
             <div class="form-block">
               <div class="switch-row"><div><strong>Included in answers</strong><p>When off, retrieval skips this file</p></div><button type="button" class="switch ${doc.included ? "on" : ""}" id="includedSwitch" role="switch" aria-pressed="${doc.included ? "true" : "false"}"></button></div>
-              <div class="switch-row"><div><strong>Citation required</strong><p>Stored with the document record</p></div><button type="button" class="switch ${doc.citation_required ? "on" : ""}" id="citeSwitch" role="switch" aria-pressed="${doc.citation_required ? "true" : "false"}"></button></div>
+              <div class="switch-row"><div><strong>Citation required</strong><p>Answers drawing on this file must cite a source</p></div><button type="button" class="switch ${doc.citation_required ? "on" : ""}" id="citeSwitch" role="switch" aria-pressed="${doc.citation_required ? "true" : "false"}"></button></div>
             </div>
           </section>
           <section class="panel">
-            <div class="panel-head"><div><h2>Matched chunks</h2><p>${(doc.passages || []).length} parents loaded</p></div></div>
-            <div class="chunk-list">${passages.map((item, index) => `<div class="chunk ${index === 0 ? "active" : ""}"><span>PAGE ${item.page_number || "—"} · ${escapeHtml(item.header_context || "Passage")}</span><p>${escapeHtml(String(item.text || "").slice(0, 280))}</p></div>`).join("") || `<p class="empty-note">No chunks stored.</p>`}</div>
+            <div class="panel-head"><div><h2>Indexed passages</h2><p>${doc.chunk_count || 0} chunks · ${doc.passage_count ?? (doc.passages || []).length} parent passages · ${escapeHtml(state.index?.chunking || "Parent-child")}</p></div></div>
+            <div class="chunk-list">${passages.map((item, index) => `<button type="button" class="chunk" data-passage="${index}"><span>PASSAGE ${String(index + 1).padStart(3, "0")} · PAGE ${item.page_number || "—"}${item.header_context ? ` · ${escapeHtml(item.header_context.split(" > ").pop())}` : ""}</span><p>${escapeHtml(String(item.text || "").replace(/^#{1,6}\s+/gm, "").replace(/\s+/g, " ").slice(0, 200))}…</p></button>`).join("") || `<p class="empty-note">No chunks stored.</p>`}</div>
           </section>
         </aside>
       </div>
     </div>`;
   listen($("#backKnowledge"), "click", () => showPage("knowledge"));
+  page.querySelectorAll("[data-passage]").forEach((button) => {
+    listen(button, "click", () => {
+      page.querySelectorAll("[data-passage]").forEach((item) => item.classList.toggle("active", item === button));
+      page.querySelectorAll("#documentPreview .preview-passage").forEach((item) => item.classList.remove("focus"));
+      const target = page.querySelector(`#documentPreview [data-preview="${button.dataset.passage}"]`);
+      if (!target) {
+        notify("That passage is beyond the preview.");
+        return;
+      }
+      target.classList.add("focus");
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
   listen($("#replaceFile"), "click", () => chooseFile("replace", doc.id));
   listen($("#openOriginal"), "click", () => openOriginal(doc));
   listen($("#deleteDoc"), "click", () => confirmDelete(doc));
@@ -740,6 +875,29 @@ async function renderDocument() {
   listen($("#citeSwitch"), "click", (event) =>
     togglePolicy(event.currentTarget, doc.id, "citation_required", "Citations are required for this document", "Citations are optional for this document")
   );
+}
+
+// Render stored passages as a readable preview: Markdown-style headings become headings,
+// tables and plain lines stay text. Each passage is addressable so a chunk can be focused.
+function documentPreview(passages, total) {
+  if (!passages.length) return `<p class="empty-note">No extractable preview.</p>`;
+  let lastPage = null;
+  const blocks = passages.map((passage, index) => {
+    const lines = String(passage.text || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    const body = lines
+      .map((line) => {
+        const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+        if (heading) return heading[1].length <= 1 ? `<h2>${escapeHtml(heading[2])}</h2>` : `<h3>${escapeHtml(heading[2])}</h3>`;
+        if (/^\|.*\|$/.test(line)) return /^\|[\s|:-]+\|$/.test(line) ? "" : `<p class="preview-table">${escapeHtml(line)}</p>`;
+        return `<p>${escapeHtml(line.replace(/^[-*]\s+/, "• "))}</p>`;
+      })
+      .join("");
+    const pageMark = passage.page_number !== lastPage ? `<div class="section-eyebrow">Page ${escapeHtml(passage.page_number || "—")}</div>` : "";
+    lastPage = passage.page_number;
+    return `${pageMark}<section class="preview-passage" data-preview="${index}">${body}</section>`;
+  });
+  const more = total > passages.length ? `<p class="empty-note">Showing the first ${passages.length} of ${total} passages.</p>` : "";
+  return blocks.join("") + more;
 }
 
 async function togglePolicy(button, id, key, onText, offText) {
@@ -785,118 +943,225 @@ function pipeRow(nodes) {
 }
 
 async function renderPipeline() {
-  const [index, settings] = await Promise.all([api.index(), ensureSettings()]);
+  const [index, settings, evals] = await Promise.all([api.index(), ensureSettings(), api.evalLatest().catch(() => ({}))]);
   state.index = index;
   state.settings = settings;
+  const stats = index.stats || {};
   const drift = settings.settings_drift || {};
   const driftKeys = Object.keys(drift);
   const driftNote = driftKeys.length
-    ? `<div class="settings-drift-warning" role="status"><strong>Settings drift</strong><p>Saved workspace values override process env defaults for the next question. ${driftKeys.map((key) => {
-        const row = drift[key];
-        return `${key}: saved ${row.saved} vs NEEDLE/env ${row.env_default}`;
-      }).join(" · ")}. Phase 0.5 baselines use <code>backend/eval/baseline_config.json</code> (top_k=30) explicitly.</p></div>`
+    ? `<div class="settings-drift-warning" role="status"><strong>Workspace settings differ from server defaults</strong><p>Questions use the saved workspace values. ${driftKeys
+        .map((key) => `${escapeHtml(key)}: ${escapeHtml(drift[key].saved)} (server default ${escapeHtml(drift[key].env_default)})`)
+        .join(" · ")}. The eval pins its own values in <code>backend/eval/config.json</code>.</p></div>`
     : "";
+  const version = escapeHtml(String(index.version_id || "").slice(0, 8) || "—");
+  const jevState = index.jev_circuit === "open" ? "Degraded" : index.jev_configured ? "Ready" : "No key";
+  const latestEval = evals?.hermetic || null;
+  const node = (label, title, detail, on = false) =>
+    `<div class="pipe-node ${on ? "on" : ""}"><span class="node-label">${label}</span><strong>${title}</strong><small>${detail}</small></div>`;
   $("#page-pipeline").innerHTML = `
     <div class="page-content">
       <header class="page-header">
         <div><div class="section-eyebrow">Index architecture</div><h1>Pipeline</h1><p>Ingestion, retrieval, Jev reranking, and the grounding check for the active index.</p></div>
-        <div class="page-actions"><button class="btn" id="rollbackIndex" type="button">Roll back</button><button class="btn" id="reconcileIndex" type="button">Reconcile</button><button class="btn primary" id="refreshIndex" type="button">Refresh index</button></div>
+        <div class="page-actions">
+          <button class="btn" id="viewRegistry" type="button">View registry</button>
+          <button class="btn" id="reconcileIndex" type="button">Reconcile</button>
+          <button class="btn primary" id="refreshIndex" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>Refresh index</button>
+        </div>
       </header>
       ${driftNote}
       <div class="stat-grid">
-        <article class="stat-card"><span>Active version</span><div class="stat-value">${escapeHtml(String(index.version_id || "").slice(0, 8) || "—")}</div><small>${escapeHtml(index.embedding_model || "")} · ${index.embedding_dimensions ?? "—"} dims</small></article>
-        <article class="stat-card accent"><span>Jev</span><div class="stat-value">${index.jev_circuit === "open" ? "Degraded" : index.jev_configured ? "Ready" : "Key"}</div><small>${escapeHtml(index.rerank_mode || index.jev_model || "")}</small></article>
-        <article class="stat-card"><span>Documents</span><div class="stat-value">${index.documents ?? 0}</div><small>${index.chunks ?? 0} chunks</small></article>
-        <article class="stat-card dark"><span>Compatibility</span><div class="stat-value">${index.compatible ? "Match" : "Blocked"}</div><small>Similarity floor ${settings.similarity_threshold}</small></article>
+        <article class="stat-card"><span>Active version</span><div class="stat-value">${version}</div><small>${escapeHtml(index.embedding_model || "")} · ${index.embedding_dimensions ?? "—"} dimensions</small></article>
+        <article class="stat-card accent"><span>Pipeline health</span><div class="stat-value">${stats.run_success_rate == null ? "—" : percent(stats.run_success_rate)}</div><small>${stats.runs_counted ? `${stats.runs_counted} runs in 30 days` : "No runs in 30 days"}</small></article>
+        <article class="stat-card"><span>Mean retrieval</span><div class="stat-value">${stats.mean_retrieval_ms == null ? "—" : escapeHtml(seconds(stats.mean_retrieval_ms))}</div><small>Search + rerank, last 30 days</small></article>
+        <article class="stat-card dark"><span>Last handoff</span><div class="stat-value">${stats.last_handoff_at ? escapeHtml(when(stats.last_handoff_at)) : "—"}</div><small>${index.chunks ?? 0} chunks in the active index</small></article>
       </div>
       <div class="two-column">
         <section class="panel">
-          <div class="panel-head"><div><h2>Live path</h2><p>What a question actually runs</p></div><span class="status">${index.compatible ? "Ready" : "Needs refresh"}</span></div>
+          <div class="panel-head"><div><h2>Live architecture</h2><p>What a question actually runs</p></div><span class="status ${index.compatible ? "" : "sync"}">${index.compatible ? "All systems normal" : "Needs refresh"}</span></div>
           <div class="pipeline-map">
-            <div class="branch-label">Ingestion</div>
+            <div class="branch-label">Ingestion path</div>
             ${pipeRow([
-              `<div class="pipe-node on"><span class="node-label">Source</span><strong>Documents</strong><small>${index.documents ?? 0} active</small></div>`,
-              `<div class="pipe-node on"><span class="node-label">Prepare</span><strong>${escapeHtml(settings.chunking || "Parent-child")}</strong><small>${index.chunks ?? 0} chunks</small></div>`,
-              `<div class="pipe-node on"><span class="node-label">Encode</span><strong>Tokenize + embed</strong><small>${index.embedding_dimensions ?? "—"} dims</small></div>`,
-              `<div class="pipe-node on"><span class="node-label">Store</span><strong>Vector index</strong><small>${escapeHtml(String(index.version_id || "").slice(0, 8) || "—")}</small></div>`,
+              node("Source", "Documents", `${index.documents ?? 0} active`, true),
+              node("Prepare", `${escapeHtml(index.chunking || "Parent-child")} chunking`, `${index.chunks ?? 0} chunks`, true),
+              node("Encode", "Tokenize + embed", `${index.embedding_dimensions ?? "—"} dims · ${escapeHtml(index.embed_style || "raw")}`, true),
+              node("Store", "Vector + keyword index", `${version} active`, true),
             ])}
-            <div class="branch-label" style="margin-top:28px">Query</div>
+            <div class="branch-label" style="margin-top:38px">Query path</div>
             ${pipeRow([
-              `<div class="pipe-node"><span class="node-label">Retrieve</span><strong>Top-k search</strong><small>k = ${settings.top_k}</small></div>`,
-              `<div class="pipe-node"><span class="node-label">Refine</span><strong>Jev reranker</strong><small>keep ${settings.max_parents}</small></div>`,
-              `<div class="pipe-node"><span class="node-label">Answer</span><strong>${escapeHtml(index.answer_model || "OpenRouter")}</strong><small>grounding check</small></div>`,
+              node("Input", "Condense + embed", "follow-ups rewritten"),
+              node("Retrieve", "Hybrid search", `k = ${settings.top_k} · floor ${Number(settings.similarity_threshold).toFixed(2)}`),
+              node("Refine", "Jev reranker", `${escapeHtml(jevState)} · keep ≥ ${Number(index.jev_relevance_threshold ?? 0.2).toFixed(2)}`),
+              node("Answer", "Ground + validate", latestEval?.metrics?.answers ? `${percent(latestEval.metrics.answers.answer_rate)} eval answer rate` : escapeHtml(index.answer_model || "OpenRouter")),
             ])}
+            <div class="pipeline-legend"><span><i></i> Production active</span><span>● Runtime component</span><span>Jev via ${escapeHtml(index.jev_provider || "openrouter")} · ${escapeHtml(index.jev_model || "")}</span></div>
           </div>
         </section>
-        <section class="panel">
-          <div class="panel-head"><div><h2>Recent runs</h2><p>Uploads, deletes, and handoffs</p></div></div>
-          <div class="run-list">${(index.runs || []).map((run) => `<div class="run"><span class="run-time">${escapeHtml(when(run.created_at))}</span><div><strong>${escapeHtml(run.name)}</strong><p>${escapeHtml(run.detail)}</p></div><span class="status">${escapeHtml(run.status)}</span></div>`).join("") || `<p class="empty-note">No runs recorded yet.</p>`}</div>
-        </section>
+        <div class="stack">
+          <section class="panel">
+            <div class="panel-head"><div><h2>Recent runs</h2><p>Uploads, deletes, and handoffs</p></div></div>
+            <div class="run-list">${(index.runs || []).slice(0, 6).map((run) => `<div class="run"><span class="run-time">${escapeHtml(clock(run.created_at))}</span><div><strong>${escapeHtml(run.name)}</strong><p>${escapeHtml(run.detail)}</p></div><span class="status ${run.status === "Success" ? "" : "sync"}">${escapeHtml(run.status)}</span></div>`).join("") || `<p class="empty-note">No runs recorded yet.</p>`}</div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h2>Thresholds</h2><p>Active retrieval configuration</p></div></div>
+            <div class="metric-list">
+              <div class="metric-row"><div><strong>Top-k retrieval</strong><p>Initial candidate pool</p></div><div class="metric-score">${settings.top_k}</div></div>
+              <div class="metric-row"><div><strong>Similarity floor</strong><p>Minimum cosine score</p></div><div class="metric-score">${Number(settings.similarity_threshold).toFixed(2)}</div></div>
+              <div class="metric-row"><div><strong>Jev relevance</strong><p>Passages below this are dropped</p></div><div class="metric-score">${Number(index.jev_relevance_threshold ?? 0.2).toFixed(2)}</div></div>
+              <div class="metric-row"><div><strong>Rerank limit</strong><p>Context passages retained</p></div><div class="metric-score">${settings.max_parents}</div></div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h2>Quality gate</h2><p>${latestEval ? `Hermetic eval · ${escapeHtml(latestEval.tier)} tier · ${escapeHtml(when(latestEval.finished_at))}` : "No eval run recorded yet"}</p></div>${latestEval ? `<span class="status ${latestEval.gate?.passed ? "" : "sync"}">${latestEval.gate?.passed ? "Pass" : "Fail"}</span>` : ""}</div>
+            ${evalPanel(latestEval)}
+          </section>
+        </div>
       </div>
     </div>`;
-  listen($("#rollbackIndex"), "click", async () => {
-    try {
-      await api.rollbackIndex();
-      notify("Previous index restored");
-      await renderPipeline();
-    } catch (err) {
-      notify(err.message);
-    }
-  });
+  listen($("#viewRegistry"), "click", () => showRegistry());
   listen($("#reconcileIndex"), "click", async () => {
-    try {
-      const result = await api.reconcileIndex();
-      notify(`Reconcile removed ${result.removed} orphaned records`);
-      await renderPipeline();
-    } catch (err) {
-      notify(err.message);
-    }
+    const result = await api.reconcileIndex();
+    const orphans = result.orphaned_documents || [];
+    notify(
+      `Reconcile removed ${result.removed} orphaned record${result.removed === 1 ? "" : "s"}` +
+        (orphans.length ? `; ${orphans.length} indexed document${orphans.length === 1 ? " is" : "s are"} missing from the catalog` : "")
+    );
+    await renderPipeline();
   });
-  listen($("#refreshIndex"), "click", async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    button.textContent = "Refreshing…";
-    try {
-      await api.refreshIndex();
-      notify("Index refreshed");
-      await renderPipeline();
-      await refreshShell();
-    } catch (err) {
-      notify(err.message);
-      button.disabled = false;
-      button.textContent = "Refresh index";
+  listen($("#refreshIndex"), "click", (event) => refreshIndex(event.currentTarget));
+}
+
+function evalPanel(report) {
+  if (!report) {
+    return `<div class="form-block"><p>Run <code>python -m eval run</code> in <code>backend/</code> to measure retrieval and answer quality on the repo's test corpus.</p></div>`;
+  }
+  const retrieval = report.metrics?.retrieval || {};
+  const answers = report.metrics?.answers;
+  const abstain = report.metrics?.abstention;
+  const rows = [
+    ["Recall@5", "Expected passage in the top five", percent(retrieval.hit_at_5)],
+    ["MRR", "Rank of the first relevant passage", retrieval.mrr == null ? "—" : Number(retrieval.mrr).toFixed(2)],
+  ];
+  if (answers) {
+    rows.push(["Answer rate", "Answerable questions released as grounded", percent(answers.answer_rate)]);
+    rows.push(["Key-fact recall", "Facts present in released answers", percent(answers.key_fact_recall)]);
+    rows.push(["Abstention recall", "Unanswerable questions withheld", percent(abstain?.recall)]);
+  }
+  return `<div class="metric-list">${rows
+    .map(([label, hint, value]) => `<div class="metric-row"><div><strong>${label}</strong><p>${hint}</p></div><div class="metric-score">${value}</div></div>`)
+    .join("")}</div>`;
+}
+
+async function refreshIndex(button, override = false) {
+  button.disabled = true;
+  button.textContent = "Refreshing…";
+  try {
+    const status = await api.refreshIndex(override);
+    notify(`Published index ${String(status.version_id || "").slice(0, 8)}`);
+    await refreshShell();
+    await renderPipeline();
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = "Refresh index";
+    if (err instanceof ApiError && err.status === 409 && err.detail?.overridable) {
+      openModal("Publish without the recall check?", `<p>${escapeHtml(err.message)}</p><p>The new version is checked for a complete copy either way. Only the golden-question recall comparison is skipped.</p>`, [
+        { label: "Cancel", onClick: closeModal },
+        {
+          label: "Publish anyway",
+          primary: true,
+          onClick: async () => {
+            closeModal();
+            await refreshIndex(button, true);
+          },
+        },
+      ]);
+      return;
     }
-  });
+    notify(err.message);
+  }
+}
+
+async function showRegistry() {
+  const { versions = [] } = await api.indexVersions();
+  const rows = versions
+    .map(
+      (item) => `<tr><td><strong>${escapeHtml(String(item.version_id).slice(0, 8))}</strong><br><small>${escapeHtml(item.collection_name)}</small></td><td><span class="status ${item.status === "active" ? "" : "sync"}">${escapeHtml(item.status)}</span></td><td>${escapeHtml(item.embedding_model)}<br><small>${escapeHtml(item.embed_style)} · ${escapeHtml(item.chunking)}</small></td><td>${item.chunk_count ?? "—"}</td><td>${escapeHtml(when(item.activated_at || item.created_at))}</td></tr>`
+    )
+    .join("");
+  const canRollBack = versions.some((item) => item.status === "retired");
+  openModal(
+    "Index registry",
+    `<div class="table-scroll"><table class="data-table"><thead><tr><th>Version</th><th>Status</th><th>Model</th><th>Chunks</th><th>When</th></tr></thead><tbody>${rows || `<tr><td colspan="5"><p class="empty-note">No versions recorded.</p></td></tr>`}</tbody></table></div>`,
+    [
+      { label: "Close", onClick: closeModal },
+      ...(canRollBack
+        ? [
+            {
+              label: "Roll back to previous",
+              danger: true,
+              onClick: async () => {
+                const restored = await api.rollbackIndex();
+                closeModal();
+                notify(`Restored index ${String(restored.version_id || "").slice(0, 8)}`);
+                await refreshShell();
+                await renderPipeline();
+              },
+            },
+          ]
+        : []),
+    ],
+    { wide: true }
+  );
 }
 
 async function renderAnalytics() {
-  const report = await api.analytics(state.analyticsDays);
+  const [report, evals] = await Promise.all([api.analytics(state.analyticsDays), api.evalLatest().catch(() => ({}))]);
   const series = report.series || [];
+  const prior = report.prior || {};
   const max = Math.max(1, ...series.map((point) => Number(point.questions) || 0));
   const gaps = report.gaps || [];
+  const step = Math.max(1, Math.round(series.length / 5));
+  const labels = series.filter((_, index) => index % step === 0).map((point) => `<span>${escapeHtml(shortDay(point.day))}</span>`).join("");
+  const perDay = report.questions ? report.questions / (report.days || state.analyticsDays) : 0;
+  const dailyAverage = perDay && perDay < 0.1 ? "<0.1" : perDay.toFixed(1);
+  const evalReport = evals?.hermetic;
+  const abstainPrecision = evalReport?.metrics?.abstention?.precision;
   $("#page-analytics").innerHTML = `
     <div class="page-content">
       <header class="page-header">
-        <div><div class="section-eyebrow">Quality intelligence</div><h1>Analytics</h1><p>Counts come from questions this workspace has actually asked.</p></div>
+        <div><div class="section-eyebrow">Quality intelligence</div><h1>Analytics</h1><p>Adoption, answer quality, and coverage gaps from questions this workspace has actually asked.</p></div>
         <div class="page-actions">
           <div class="segmented" id="range">${[7, 30, 90].map((days) => `<button type="button" data-days="${days}" class="${days === state.analyticsDays ? "active" : ""}">${days}D</button>`).join("")}</div>
           <button class="btn" id="exportReport" type="button">Export report</button>
         </div>
       </header>
       <div class="stat-grid">
-        <article class="stat-card dark"><span>Questions answered</span><div class="stat-value">${report.questions ?? 0}</div><small>in ${report.days || state.analyticsDays} days</small></article>
-        <article class="stat-card accent"><span>Grounded answer rate</span><div class="stat-value">${percent(report.grounded_rate)}</div><small>${report.questions ?? 0} recorded</small></article>
-        <article class="stat-card"><span>Helpful rating</span><div class="stat-value">${report.ratings ? percent(report.helpful_rate) : "—"}</div><small>${report.ratings ?? 0} ratings</small></article>
-        <article class="stat-card"><span>Withheld rate</span><div class="stat-value">${percent(report.withheld_rate)}</div><small>p50 retrieval ${report.retrieval_p50_ms ?? 0} ms</small></article>
+        <article class="stat-card dark"><span>Questions asked</span><div class="stat-value">${(report.questions ?? 0).toLocaleString()}</div><small>${dailyAverage} daily average</small></article>
+        <article class="stat-card accent"><span>Grounded answer rate</span><div class="stat-value">${percent(report.grounded_rate)}</div><small class="stat-delta">${delta(report.grounded_rate, prior.grounded_rate) || `${report.questions ?? 0} recorded`}</small></article>
+        <article class="stat-card"><span>Helpful rating</span><div class="stat-value">${report.ratings ? percent(report.helpful_rate) : "—"}</div><small>${report.ratings ?? 0} response${report.ratings === 1 ? "" : "s"} rated</small></article>
+        <article class="stat-card"><span>Withheld rate</span><div class="stat-value">${percent(report.withheld_rate)}</div><small class="stat-delta">${delta(report.withheld_rate, prior.withheld_rate, { invert: true }) || "No prior period"}</small></article>
       </div>
-      <section class="panel">
-        <div class="panel-head"><div><h2>Daily questions</h2><p>Grounded answers are the lighter bar</p></div></div>
-        <div class="chart">${series.map((point) => `<div class="bar-group" title="${escapeHtml(point.day)}"><i class="bar" style="height:${Math.round(((Number(point.questions) || 0) / max) * 100)}%"></i><i class="bar secondary" style="height:${Math.round(((Number(point.grounded) || 0) / max) * 100)}%"></i></div>`).join("") || `<p class="empty-note">Ask a few questions to fill this chart.</p>`}</div>
-      </section>
+      <div class="two-column">
+        <section class="panel">
+          <div class="panel-head"><div><h2>Answer volume &amp; quality</h2><p>Daily questions with the grounded share as the lighter bar</p></div><div class="source-type"><i class="live-dot"></i> LIVE METRICS</div></div>
+          ${report.questions
+            ? `<div class="chart" aria-label="${state.analyticsDays} day answer volume bar chart">${series.map((point) => `<div class="bar-group" title="${escapeHtml(point.day)}: ${point.questions} asked, ${point.grounded} grounded"><i class="bar" style="height:${Math.round(((Number(point.questions) || 0) / max) * 100)}%"></i><i class="bar secondary" style="height:${Math.round(((Number(point.grounded) || 0) / max) * 100)}%"></i></div>`).join("")}</div><div class="chart-labels">${labels}</div>`
+            : `<p class="empty-note">Ask a few questions to fill this chart.</p>`}
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div><h2>Quality signals</h2><p>How the system is performing</p></div></div>
+          <div class="metric-list">
+            <div class="metric-row"><div><strong>Citation coverage</strong><p>Released answers that cite a source</p></div><div class="metric-score">${percent(report.citation_coverage)}</div></div>
+            <div class="metric-row"><div><strong>Average relevance</strong><p>Best Jev score per question</p></div><div class="metric-score">${report.mean_relevance == null ? "—" : Number(report.mean_relevance).toFixed(2)}</div></div>
+            <div class="metric-row"><div><strong>Retrieval latency</strong><p>p50 search + rerank</p></div><div class="metric-score">${report.retrieval_p50_ms == null ? "—" : escapeHtml(seconds(report.retrieval_p50_ms))}</div></div>
+            <div class="metric-row"><div><strong>Fallback precision</strong><p>${evalReport ? "Correct withholds in the last eval" : "Run the full eval to measure"}</p></div><div class="metric-score">${percent(abstainPrecision)}</div></div>
+          </div>
+        </section>
+      </div>
       <section class="panel" style="margin-top:14px">
-        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>No coverage means Jev found nothing strong. Check failed means the draft was the problem.</p></div><button class="btn small" id="gapUpload" type="button">Add source</button></div>
-        <div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best vector score</th></tr></thead><tbody>
-          ${gaps.map((gap) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Draft failed the check" : "No strong passage"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : Number(gap.best_similarity).toFixed(2)}</td></tr>`).join("") || `<tr><td colspan="4"><p class="empty-note">No withheld questions in this range.</p></td></tr>`}
+        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>No coverage: nothing strong enough was found. Check failed: the draft was the problem.</p></div><button class="btn small" id="gapUpload" type="button">Add source</button></div>
+        <div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best match</th><th>Last asked</th><th>Action</th></tr></thead><tbody>
+          ${gaps.map((gap, index) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Draft failed the check" : "No strong passage"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : `${Number(gap.best_similarity).toFixed(2)} similarity`}</td><td>${escapeHtml(when(gap.last_seen))}</td><td><button class="btn small" type="button" data-gap="${index}">${gap.outcome === "check_failed" ? "Ask again" : "Add source"}</button></td></tr>`).join("") || `<tr><td colspan="6"><p class="empty-note">No withheld questions in this range.</p></td></tr>`}
         </tbody></table></div>
       </section>
     </div>`;
@@ -908,6 +1173,19 @@ async function renderAnalytics() {
   });
   listen($("#exportReport"), "click", () => exportReport());
   listen($("#gapUpload"), "click", () => chooseFile("upload"));
+  document.querySelectorAll("#page-analytics [data-gap]").forEach((button) => {
+    listen(button, "click", () => {
+      const gap = gaps[Number(button.dataset.gap)];
+      if (gap.outcome === "check_failed") {
+        showPage("ask");
+        $("#askInput").value = gap.query;
+        $("#askInput").dispatchEvent(new Event("input"));
+        $("#askInput").focus();
+        return;
+      }
+      chooseFile("upload");
+    });
+  });
 }
 
 async function exportReport() {
@@ -932,6 +1210,8 @@ const settingFields = [
   ["setProfile", "profile_name"],
   ["setCollection", "default_collection"],
   ["setRegion", "region"],
+  ["setTimezone", "timezone"],
+  ["setChunking", "chunking"],
   ["setLength", "answer_length"],
   ["setCiteStyle", "citation_style"],
   ["setTopK", "top_k"],
@@ -979,7 +1259,7 @@ function settingsPayload() {
     profile_name: String(form.profile_name ?? "").trim(),
     default_collection: String(form.default_collection ?? "").trim() || "General",
     region: form.region || current.region || "European Union",
-    timezone: current.timezone || form.timezone || "UTC",
+    timezone: form.timezone || current.timezone || "UTC",
     show_traces: Boolean(form.show_traces),
     allow_downloads: Boolean(form.allow_downloads),
     answer_length: form.answer_length || current.answer_length || "Balanced",
@@ -991,6 +1271,7 @@ function settingsPayload() {
     max_parents: number("max_parents", "Reranked context limit", 1, 12),
     rrf_k: number("rrf_k", "Fusion constant", 1, 200),
     contextual_embeddings: Boolean(form.contextual_embeddings),
+    chunking: form.chunking || current.chunking || "Parent-child",
   };
 }
 
@@ -1008,20 +1289,22 @@ async function renderSettings() {
           <button type="button" class="active" data-settings="general">General</button>
           <button type="button" data-settings="answers">Answer behavior</button>
           <button type="button" data-settings="retrieval">Retrieval</button>
-          <button type="button" data-settings="members">Members</button>
+          <button type="button" data-settings="members">Members &amp; access</button>
           <button type="button" data-settings="integrations">Integrations</button>
           <button type="button" data-settings="billing">Data</button>
         </nav>
         <div>
           <section class="panel settings-section active" data-section="general">
-            <div class="panel-head"><div><h2>General</h2><p>Workspace identity</p></div></div>
-            <div class="form-block"><div class="field-grid">
+            <div class="panel-head"><div><h2>General</h2><p>Workspace identity and regional preferences</p></div></div>
+            <div class="form-block"><h3>Workspace profile</h3><p>Shown in the top bar and on exported reports.</p><div class="field-grid">
               <div class="field"><label for="setName">Workspace name</label><input id="setName" /></div>
               <div class="field"><label for="setProfile">Your name</label><input id="setProfile" /></div>
               <div class="field"><label for="setCollection">Default collection</label><select id="setCollection">${optionList(["General", "Product", "Security", "Research"], state.form.default_collection)}</select></div>
               <div class="field"><label for="setRegion">Region</label><select id="setRegion">${optionList(["European Union", "United States", "Asia Pacific"], state.form.region)}</select></div>
-            </div>
-            <div class="switch-row"><div><strong>Show retrieval traces</strong><p>Evidence panel includes candidate counts</p></div>${switches("show_traces")}</div>
+              <div class="field"><label for="setTimezone">Timezone</label><select id="setTimezone">${optionList(["UTC", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Asia/Kolkata", "Asia/Tokyo"], state.form.timezone)}</select></div>
+            </div></div>
+            <div class="form-block"><h3>Workspace preferences</h3><p>Shared behavior for everyone in this workspace.</p>
+            <div class="switch-row"><div><strong>Show retrieval traces</strong><p>Let members inspect retrieval and reranking steps</p></div>${switches("show_traces")}</div>
             <div class="switch-row"><div><strong>Allow source downloads</strong><p>Open original files from document detail</p></div>${switches("allow_downloads")}</div>
             </div>
           </section>
@@ -1043,14 +1326,16 @@ async function renderSettings() {
               <div class="field"><label for="setSim">Similarity threshold</label><input id="setSim" type="number" min="0" max="1" step="0.01" /></div>
               <div class="field"><label for="setParents">Reranked context limit</label><input id="setParents" type="number" min="1" max="12" /></div>
               <div class="field"><label for="setRrf">Fusion constant</label><input id="setRrf" type="number" min="1" max="200" /></div>
+              <div class="field"><label for="setChunking">Chunking strategy</label><select id="setChunking">${optionList(["Parent-child", "Fixed window", "Index card summary"], state.form.chunking)}</select></div>
             </div>
+            <div class="subtle-note" style="margin-top:16px">Search settings apply to the next question. Chunking and heading-aware embeddings take effect when you refresh the index (Pipeline → Refresh index).</div>
             <div class="switch-row"><div><strong>Heading-aware embeddings</strong><p>Next index refresh embeds the section title with each passage</p></div>${switches("contextual_embeddings")}</div>
             </div>
           </section>
           <section class="panel settings-section" data-section="members">
-            <div class="panel-head"><div><h2>Members</h2><p>Local workspace directory</p></div><button class="btn small primary" id="inviteMember" type="button">Invite member</button></div>
-            <div class="table-scroll"><table class="data-table"><thead><tr><th>Member</th><th>Role</th></tr></thead><tbody>
-              ${(members.members || []).map((member) => `<tr><td><strong>${escapeHtml(member.name)}</strong><br><small>${escapeHtml(member.email)}</small></td><td>${escapeHtml(member.role)}</td></tr>`).join("") || `<tr><td colspan="2"><p class="empty-note">No members yet.</p></td></tr>`}
+            <div class="panel-head"><div><h2>Members &amp; access</h2><p>${(members.members || []).length} member${(members.members || []).length === 1 ? "" : "s"} · local workspace directory</p></div><button class="btn small primary" id="inviteMember" type="button">Invite member</button></div>
+            <div class="table-scroll"><table class="data-table"><thead><tr><th>Member</th><th>Role</th><th>Added</th></tr></thead><tbody>
+              ${(members.members || []).map((member) => `<tr><td><strong>${escapeHtml(member.name)}</strong><br><small>${escapeHtml(member.email)}</small></td><td>${escapeHtml(member.role)}</td><td>${member.created_at ? escapeHtml(when(member.created_at)) : "Workspace owner"}</td></tr>`).join("") || `<tr><td colspan="3"><p class="empty-note">No members yet.</p></td></tr>`}
             </tbody></table></div>
           </section>
           <section class="panel settings-section" data-section="integrations">
@@ -1120,7 +1405,8 @@ async function saveSettings() {
   await refreshShell();
 }
 
-function openModal(title, body, actions) {
+function openModal(title, body, actions, { wide = false } = {}) {
+  $("#modal").querySelector(".modal-card").classList.toggle("wide", wide);
   $("#modalTitle").textContent = title;
   $("#modalBody").innerHTML = body;
   const bar = $("#modalActions");
@@ -1428,9 +1714,13 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("#threadsToggle").setAttribute("aria-expanded", "false");
+if (/Mac|iPhone|iPad/.test(navigator.platform || "")) $("#searchShortcut").textContent = "⌘K";
 $("#sourceToggle").setAttribute("aria-expanded", "false");
 $("#voiceButton").setAttribute("aria-pressed", "false");
 
 refreshShell()
-  .then(() => renderConversation())
+  .then(() => {
+    renderConversation();
+    if (location.hash && location.hash !== "#ask") routeFromHash();
+  })
   .catch((err) => notify(err.message));

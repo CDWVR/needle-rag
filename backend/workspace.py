@@ -114,6 +114,10 @@ class WorkspaceStore:
         self._ensure_column("document_policy", "content_hash", "TEXT")
         self._ensure_column("document_policy", "deleted", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("events", "outcome", "TEXT")
+        self._ensure_column("events", "retrieval_ms", "INTEGER")
+        self._ensure_column("events", "relevance", "REAL")
+        self._ensure_column("events", "cited", "INTEGER")
+        self._ensure_column("events", "reject_category", "TEXT")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS eval_candidates (
@@ -301,6 +305,11 @@ class WorkspaceStore:
             self.conn.commit()
         return message_id
 
+    def set_rewritten_query(self, message_id: str, rewritten: str) -> None:
+        with self._lock:
+            self.conn.execute("UPDATE messages SET rewritten_query = ? WHERE id = ?", (rewritten[:500], message_id))
+            self.conn.commit()
+
     def set_feedback(self, message_id: str, rating: str) -> bool:
         if rating not in {"helpful", "unhelpful"}:
             return False
@@ -334,8 +343,11 @@ class WorkspaceStore:
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO events (id, created_at, query, grounded, withheld, latency_ms, source_count, best_similarity, candidate_count, outcome)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO events (
+                    id, created_at, query, grounded, withheld, latency_ms, source_count, best_similarity,
+                    candidate_count, outcome, retrieval_ms, relevance, cited, reject_category
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -348,6 +360,10 @@ class WorkspaceStore:
                     fields.get("best_similarity"),
                     int(fields.get("candidate_count") or 0),
                     fields.get("outcome") or "",
+                    int(fields.get("retrieval_ms") or 0),
+                    fields.get("relevance"),
+                    1 if fields.get("cited") else 0,
+                    fields.get("reject_category"),
                 ),
             )
             self.conn.commit()
@@ -368,66 +384,108 @@ class WorkspaceStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def _window(self, since: str, until: Optional[str] = None) -> Dict[str, Any]:
+        sql = "SELECT * FROM events WHERE created_at >= ?"
+        params: List[Any] = [since]
+        if until:
+            sql += " AND created_at < ?"
+            params.append(until)
+        events = self.conn.execute(sql + " ORDER BY created_at ASC", params).fetchall()
+        feedback_sql = "SELECT rating FROM feedback WHERE created_at >= ?" + (" AND created_at < ?" if until else "")
+        feedback = self.conn.execute(feedback_sql, params).fetchall()
+        total = len(events)
+        answered = [event for event in events if not event["withheld"]]
+        relevance = [event["relevance"] for event in events if event["relevance"] is not None]
+        retrieval = sorted(event["retrieval_ms"] for event in events if event["retrieval_ms"])
+        latencies = sorted(event["latency_ms"] for event in events if event["latency_ms"])
+        helpful = sum(1 for row in feedback if row["rating"] == "helpful")
+        return {
+            "events": events,
+            "questions": total,
+            "grounded_rate": _rate(sum(1 for event in events if event["grounded"]), total),
+            "withheld_rate": _rate(sum(1 for event in events if event["withheld"]), total),
+            "helpful_rate": _rate(helpful, len(feedback)),
+            "ratings": len(feedback),
+            "citation_coverage": _rate(sum(1 for event in answered if event["cited"]), len(answered)),
+            "mean_relevance": round(sum(relevance) / len(relevance), 4) if relevance else None,
+            "retrieval_p50_ms": _p50(retrieval),
+            "latency_p50_ms": _p50(latencies),
+        }
+
     def analytics(self, days: int) -> Dict[str, Any]:
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        now = datetime.now(timezone.utc)
+        since = (now - timedelta(days=days)).isoformat()
+        prior_since = (now - timedelta(days=days * 2)).isoformat()
         with self._lock:
-            events = self.conn.execute("SELECT * FROM events WHERE created_at >= ? ORDER BY created_at ASC", (since,)).fetchall()
-            feedback = self.conn.execute(
-                """
-                SELECT f.rating FROM feedback f
-                JOIN messages m ON m.id = f.message_id
-                WHERE f.created_at >= ?
-                """,
-                (since,),
-            ).fetchall()
+            current = self._window(since)
+            prior = self._window(prior_since, since)
+
             def gap_rows(outcome: str):
                 return self.conn.execute(
                     """
-                    SELECT query, COUNT(*) AS attempts, MAX(best_similarity) AS best_similarity, ? AS outcome
+                    SELECT MIN(query) AS query, COUNT(*) AS attempts, MAX(best_similarity) AS best_similarity,
+                           MAX(created_at) AS last_seen, ? AS outcome
                     FROM events
                     WHERE created_at >= ? AND outcome = ?
-                    GROUP BY query
-                    ORDER BY attempts DESC
+                    GROUP BY lower(trim(query))
+                    ORDER BY attempts DESC, last_seen DESC
                     LIMIT 8
                     """,
                     (outcome, since, outcome),
                 ).fetchall()
+
             no_coverage = gap_rows("no_coverage")
             check_failed = gap_rows("check_failed")
-        total = len(events)
-        grounded = sum(1 for event in events if event["grounded"])
-        withheld = sum(1 for event in events if event["withheld"])
-        helpful = sum(1 for row in feedback if row["rating"] == "helpful")
-        rated = len(feedback)
-        latencies = [event["latency_ms"] for event in events if event["latency_ms"]]
-        latencies.sort()
-        p50 = latencies[len(latencies) // 2] if latencies else 0
         buckets: Dict[str, Dict[str, int]] = {}
-        for event in events:
-            day = event["created_at"][:10]
-            slot = buckets.setdefault(day, {"questions": 0, "grounded": 0})
+        for offset in range(days - 1, -1, -1):
+            day = (now - timedelta(days=offset)).date().isoformat()
+            buckets[day] = {"questions": 0, "grounded": 0}
+        for event in current["events"]:
+            slot = buckets.setdefault(event["created_at"][:10], {"questions": 0, "grounded": 0})
             slot["questions"] += 1
             slot["grounded"] += 1 if event["grounded"] else 0
+        metrics = {key: value for key, value in current.items() if key != "events"}
+        previous = {key: value for key, value in prior.items() if key != "events"}
         return {
             "days": days,
-            "questions": total,
-            "grounded_rate": round(grounded / total, 4) if total else 0,
-            "withheld_rate": round(withheld / total, 4) if total else 0,
-            "helpful_rate": round(helpful / rated, 4) if rated else 0,
-            "ratings": rated,
-            "retrieval_p50_ms": p50,
-            "series": [{"day": day, **counts} for day, counts in buckets.items()],
+            **metrics,
+            "prior": previous,
+            "series": [{"day": day, **counts} for day, counts in sorted(buckets.items())],
             "gaps": [
                 {
                     "query": row["query"],
                     "attempts": row["attempts"],
                     "best_similarity": row["best_similarity"],
+                    "last_seen": row["last_seen"],
                     "outcome": row["outcome"],
                 }
                 for row in list(no_coverage) + list(check_failed)
             ],
             "gaps_no_coverage": [row["query"] for row in no_coverage],
             "gaps_check_failed": [row["query"] for row in check_failed],
+        }
+
+    def pipeline_stats(self, days: int = 30) -> Dict[str, Any]:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._lock:
+            runs = self.conn.execute("SELECT status FROM runs WHERE created_at >= ?", (since,)).fetchall()
+            retrieval = [
+                row["retrieval_ms"]
+                for row in self.conn.execute(
+                    "SELECT retrieval_ms FROM events WHERE created_at >= ? AND retrieval_ms > 0", (since,)
+                ).fetchall()
+            ]
+            handoff = self.conn.execute(
+                "SELECT created_at, detail FROM runs WHERE name = 'Version handoff' AND status = 'Success' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        finished = [row for row in runs if row["status"] in {"Success", "Failed"}]
+        return {
+            "run_success_rate": _rate(sum(1 for row in finished if row["status"] == "Success"), len(finished)),
+            "runs_counted": len(finished),
+            "mean_retrieval_ms": round(sum(retrieval) / len(retrieval)) if retrieval else None,
+            "last_handoff_at": handoff["created_at"] if handoff else None,
+            "last_handoff_detail": handoff["detail"] if handoff else None,
         }
 
     def start_job(self, filename: str) -> str:
@@ -532,6 +590,13 @@ class WorkspaceStore:
             result[item["document_id"]] = item
         return result
 
+    def citation_required_ids(self) -> List[str]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT document_id FROM document_policy WHERE citation_required = 1 AND deleted = 0"
+            ).fetchall()
+        return [row["document_id"] for row in rows]
+
     def excluded_document_ids(self) -> List[str]:
         with self._lock:
             rows = self.conn.execute("SELECT document_id FROM document_policy WHERE included = 0").fetchall()
@@ -572,7 +637,17 @@ class WorkspaceStore:
 
     def reset(self) -> None:
         with self._lock:
-            for table in ("conversations", "messages", "feedback", "events", "runs", "members", "document_policy", "jobs"):
+            for table in (
+                "conversations",
+                "messages",
+                "feedback",
+                "events",
+                "runs",
+                "members",
+                "document_policy",
+                "jobs",
+                "eval_candidates",
+            ):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute("DELETE FROM settings")
             for key, value in DEFAULTS.items():
@@ -591,6 +666,14 @@ def _loads(value: Optional[str]):
         return json.loads(value)
     except json.JSONDecodeError:
         return None
+
+
+def _rate(numerator: int, denominator: int) -> Optional[float]:
+    return round(numerator / denominator, 4) if denominator else None
+
+
+def _p50(values: List[int]) -> Optional[int]:
+    return values[len(values) // 2] if values else None
 
 
 def _bounded_int(value: Any, default: int, low: int, high: int) -> int:

@@ -14,7 +14,7 @@ import os
 from typing import List, Union
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import uvicorn
 
 MODEL_ID = os.getenv("TEI_MODEL_ID", "BAAI/bge-m3")

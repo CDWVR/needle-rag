@@ -1,0 +1,25 @@
+Ottermere Labs — Customer FAQ
+
+What uptime does Ottermere commit to?
+The Fleet Manager service is backed by a 99.5 percent monthly uptime commitment on every plan. If monthly uptime falls below that, customers on the Growth and Scale plans can claim a service credit of 10 percent of that month's fee for each full 0.5 percent below the commitment, capped at 50 percent.
+
+How long does onboarding take?
+A standard deployment takes three weeks from contract signature to the first cart running production missions: one week for the site survey and map, one week for commissioning, and one week of supervised operation. Sites larger than 20,000 square metres usually need an extra week for mapping.
+
+Where is our data stored?
+Map, mission, and telemetry data for European customers is stored in Frankfurt; data for customers in the Americas is stored in Virginia. Telemetry is kept for 18 months and then deleted. Customers can request an export of their data at any time from the Fleet Manager settings page.
+
+Can we cancel?
+Either party can end a subscription at the end of the contract minimum with 60 days' written notice. Carts remain Ottermere property on every plan and are collected within 30 days of the end of the contract.
+
+Do carts work in cold storage?
+Standard Tern-3 carts are rated down to 2 °C. For freezers, the Cold-store kit add-on rates a cart for operation down to -20 °C.
+
+Which regions do you support?
+We currently deploy in the United Kingdom, the European Union, Norway, Switzerland, the United States, and Canada. We do not yet deploy in Asia-Pacific.
+
+How do software updates work?
+Firmware updates are free on every plan. They are pushed from the Fleet Manager during a maintenance window chosen by the site, and a cart never updates while it is carrying a load.
+
+Who do we call when something breaks?
+All plans can open tickets in the support portal. Priority support adds weekend email responses within 8 hours. Premium support adds a 24/7 phone line with a 1-hour response target for cart-down incidents.

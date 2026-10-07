@@ -1,0 +1,41 @@
+Ottermere Labs Employee Handbook
+Edition 2026.1 - for employees in the United Kingdom and the European Union
+
+Welcome
+This handbook explains how we work: time off, where and when we work, expenses, equipment, and security. It does not replace your employment contract. Where the two differ, your contract wins.
+
+Questions about this handbook go to the People team through the HR portal.
+\f
+Time off
+
+Paid time off accrues at 1.75 days per full month of employment, which is 21 days a year, on top of public holidays in your country of employment.
+
+You can carry over at most 10 unused days into the next calendar year. Carried-over days expire if they are not used by 31 March.
+
+Sick leave is separate from paid time off. Tell your manager on the first morning you are unwell; a doctor's note is needed for absences longer than 5 working days.
+
+Parental leave: the primary caregiver receives 20 weeks at full pay and the secondary caregiver receives 8 weeks at full pay, taken within the first year.
+\f
+Where and when we work
+
+Most roles are hybrid. Hybrid employees are expected in the office at least two days a week, and every team agrees one fixed anchor day per week.
+
+Core hours are 10:00 to 15:00 in your local time zone. Outside core hours you choose when to work, as long as your team can reach you for planned meetings.
+
+Field service engineers follow the shift rota for their region instead of core hours. On-call engineers receive a stipend of 350 EUR for each full week on call, plus time off in lieu for any call-out that lasts longer than 2 hours.
+\f
+Expenses and equipment
+
+Day-to-day expenses such as meals with customers are capped at 60 EUR per person per day. Keep a receipt for anything above 25 EUR. Travel expenses follow the current travel policy, not this page.
+
+New starters receive a laptop, a monitor, and a 400 EUR home-office allowance that can be claimed once in the first 90 days.
+
+Laptops are replaced every 3 years. Lost or stolen equipment must be reported to IT within 24 hours.
+\f
+Security
+
+Every employee completes security awareness training within 14 days of their start date, and again every 12 months.
+
+Multi-factor authentication is required on every company account. Passwords must not be reused across accounts and are stored in the company password manager.
+
+Report anything suspicious, including unexpected emails asking for credentials, to the security team through the #security-report channel. Reporting quickly matters more than being sure.

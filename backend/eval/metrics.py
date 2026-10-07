@@ -1,197 +1,150 @@
-"""Retrieval and harness metrics that do not require a model."""
+"""Metric functions for the eval. Pure Python: no engine, no network, safe to import in CI."""
 
 from __future__ import annotations
 
+import math
+import random
+import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
-def recall_at_k(retrieved_ids: Sequence[str], expected_ids: Sequence[str], k: int) -> float:
-    expected = [item for item in expected_ids if item]
-    if not expected:
-        return 1.0
-    found = set(list(retrieved_ids)[: max(0, k)])
-    return len(found.intersection(expected)) / len(set(expected))
+# --- retrieval ---------------------------------------------------------------
+
+def hit_at_k(rank: Optional[int], k: int) -> float:
+    return 1.0 if rank is not None and rank <= k else 0.0
 
 
-def mean_reciprocal_rank(retrieved_ids: Sequence[str], expected_ids: Sequence[str]) -> float:
-    expected = set(item for item in expected_ids if item)
-    for index, item in enumerate(retrieved_ids, start=1):
-        if item in expected:
-            return 1.0 / index
-    return 0.0
+def reciprocal_rank(rank: Optional[int]) -> float:
+    return 1.0 / rank if rank else 0.0
 
 
-def hit_from_rank(rank: Optional[int], k: int) -> float:
-    if rank is None:
+def ndcg_at_k(relevant_ranks: Sequence[int], n_relevant: int, k: int) -> float:
+    """Binary-relevance nDCG@k. `relevant_ranks` are the 1-based ranks of relevant results."""
+    if n_relevant <= 0:
         return 0.0
-    return 1.0 if rank <= k else 0.0
+    dcg = sum(1.0 / math.log2(rank + 1) for rank in relevant_ranks if rank <= k)
+    ideal = sum(1.0 / math.log2(rank + 1) for rank in range(1, min(n_relevant, k) + 1))
+    return dcg / ideal if ideal else 0.0
 
 
-def mrr_from_rank(rank: Optional[int]) -> float:
-    if rank is None:
-        return 0.0
-    return 1.0 / rank
+# --- answers -----------------------------------------------------------------
+
+_NUMBER_COMMAS = re.compile(r"(?<=\d),(?=\d{3}\b)")
 
 
-def percentile(values: Sequence[float], p: float) -> float:
+def normalize_answer(text: str) -> str:
+    cleaned = (text or "").lower()
+    cleaned = _NUMBER_COMMAS.sub("", cleaned)
+    for left, right in (("’", "'"), ("‘", "'"), ("“", '"'), ("”", '"'), ("–", "-"), ("—", "-"), (" ", " ")):
+        cleaned = cleaned.replace(left, right)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def fact_present(answer: str, fact: str) -> bool:
+    """A key fact is present if any `|`-separated alternative appears in the answer."""
+    haystack = normalize_answer(answer)
+    for option in fact.split("|"):
+        needle = normalize_answer(option)
+        if not needle:
+            continue
+        # Short alphanumeric facts ("6", "no", "F") must match as whole tokens.
+        if len(needle) <= 3 and re.fullmatch(r"[\w.]+", needle):
+            if re.search(rf"(?<![\w.]){re.escape(needle)}(?![\w]|\.\d)", haystack):
+                return True
+        elif needle in haystack:
+            return True
+    return False
+
+
+def key_fact_recall(answer: str, facts: Sequence[str]) -> Optional[float]:
+    if not facts:
+        return None
+    return sum(1 for fact in facts if fact_present(answer, fact)) / len(facts)
+
+
+def leaked_phrases(answer: str, phrases: Sequence[str]) -> List[str]:
+    haystack = normalize_answer(answer)
+    return [phrase for phrase in phrases or [] if normalize_answer(phrase) in haystack]
+
+
+def citation_numbers(answer: str) -> List[int]:
+    return [int(number) for number in re.findall(r"\[(\d+)\]", answer or "")]
+
+
+# --- classification ----------------------------------------------------------
+
+def binary_scores(predictions: Sequence[bool], labels: Sequence[bool]) -> Dict[str, Any]:
+    """Precision / recall / F1 where True is the positive class (here: abstain on unanswerable)."""
+    tp = sum(1 for p, y in zip(predictions, labels) if p and y)
+    fp = sum(1 for p, y in zip(predictions, labels) if p and not y)
+    fn = sum(1 for p, y in zip(predictions, labels) if not p and y)
+    tn = sum(1 for p, y in zip(predictions, labels) if not p and not y)
+    precision = tp / (tp + fp) if tp + fp else None
+    recall = tp / (tp + fn) if tp + fn else None
+    f1 = (2 * precision * recall / (precision + recall)) if precision and recall else (0.0 if precision is not None and recall is not None else None)
+    return {
+        "precision": _round(precision),
+        "recall": _round(recall),
+        "f1": _round(f1),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+    }
+
+
+# --- aggregation -------------------------------------------------------------
+
+def mean(values: Iterable[Optional[float]]) -> Optional[float]:
+    numbers = [float(value) for value in values if value is not None]
+    return round(sum(numbers) / len(numbers), 4) if numbers else None
+
+
+def percentile(values: Sequence[float], p: float) -> Optional[float]:
     if not values:
-        return 0.0
+        return None
     ordered = sorted(float(value) for value in values)
     if len(ordered) == 1:
-        return ordered[0]
-    rank = (len(ordered) - 1) * (p / 100.0)
-    low = int(rank)
+        return round(ordered[0], 1)
+    position = (len(ordered) - 1) * (p / 100.0)
+    low = int(position)
     high = min(low + 1, len(ordered) - 1)
-    weight = rank - low
-    return ordered[low] * (1 - weight) + ordered[high] * weight
+    weight = position - low
+    return round(ordered[low] * (1 - weight) + ordered[high] * weight, 1)
 
 
-def summarize_latencies(rows: Iterable[Dict[str, float]], stages: Sequence[str]) -> Dict[str, Dict[str, float]]:
-    summary = {}
-    for stage in stages:
-        values = [float(row.get(stage) or 0) for row in rows if stage in row]
-        if not values:
-            summary[stage] = {"p50_ms": 0.0, "p95_ms": 0.0, "mean_ms": 0.0, "n": 0}
-            continue
-        summary[stage] = {
-            "p50_ms": round(percentile(values, 50), 2),
-            "p95_ms": round(percentile(values, 95), 2),
-            "mean_ms": round(sum(values) / len(values), 2),
-            "n": len(values),
-        }
-    return summary
-
-
-def abstention_scores(predictions: Sequence[bool], labels: Sequence[bool]) -> Dict[str, float]:
-    """predictions/labels True means abstain / unanswerable."""
-    tp = fp = tn = fn = 0
-    for predicted, label in zip(predictions, labels):
-        if predicted and label:
-            tp += 1
-        elif predicted and not label:
-            fp += 1
-        elif (not predicted) and label:
-            fn += 1
-        else:
-            tn += 1
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
-    return {
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "true_positives": tp,
-        "false_positives": fp,
-        "false_negatives": fn,
-        "true_negatives": tn,
-    }
-
-
-def sweep_thresholds(scores: Sequence[float], thresholds: Sequence[float]) -> List[dict]:
-    ordered = sorted(float(score) for score in scores)
-    rows = []
-    for threshold in thresholds:
-        kept = [score for score in ordered if score >= threshold]
-        rows.append({"threshold": threshold, "kept": len(kept), "best": max(kept) if kept else 0.0})
-    return rows
-
-
-def mean_spread(values: Sequence[float]) -> Dict[str, float]:
-    numbers = [float(value) for value in values]
+def bootstrap_ci(values: Sequence[float], *, resamples: int = 2000, alpha: float = 0.05, seed: int = 13) -> Optional[Dict[str, float]]:
+    """Percentile bootstrap CI for the mean. Deterministic for a given seed."""
+    numbers = [float(value) for value in values if value is not None]
     if not numbers:
-        return {"mean": 0.0, "min": 0.0, "max": 0.0, "spread": 0.0}
-    mean = sum(numbers) / len(numbers)
-    return {
-        "mean": round(mean, 4),
-        "min": round(min(numbers), 4),
-        "max": round(max(numbers), 4),
-        "spread": round(max(numbers) - min(numbers), 4),
-    }
-
-
-def bootstrap_ci(
-    values: Sequence[float],
-    *,
-    n_resamples: int = 1000,
-    alpha: float = 0.05,
-    seed: int = 13,
-) -> Dict[str, float]:
-    """Percentile bootstrap 95% CI for the mean of `values`."""
-    import random
-
-    numbers = [float(value) for value in values]
-    if not numbers:
-        return {"mean": 0.0, "low": 0.0, "high": 0.0, "n": 0}
-    rng = random.Random(seed)
-    means = []
-    n = len(numbers)
-    for _ in range(max(1, n_resamples)):
-        sample = [numbers[rng.randrange(n)] for _ in range(n)]
-        means.append(sum(sample) / n)
-    means.sort()
-    low_i = int((alpha / 2) * (len(means) - 1))
-    high_i = int((1 - alpha / 2) * (len(means) - 1))
-    mean = sum(numbers) / n
-    return {
-        "mean": round(mean, 4),
-        "low": round(means[low_i], 4),
-        "high": round(means[high_i], 4),
-        "n": n,
-    }
-
-
-def bootstrap_diff_ci(
-    left: Sequence[float],
-    right: Sequence[float],
-    *,
-    n_resamples: int = 1000,
-    alpha: float = 0.05,
-    seed: int = 13,
-) -> Dict[str, Any]:
-    """Bootstrap CI for mean(left) - mean(right). Flags when 0 is inside the interval."""
-    import random
-
-    a = [float(value) for value in left]
-    b = [float(value) for value in right]
-    if not a or not b or len(a) != len(b):
-        # Pairwise when same length; otherwise compare independent means on min length.
-        n = min(len(a), len(b))
-        a, b = a[:n], b[:n]
-    if not a:
-        return {"diff": 0.0, "low": 0.0, "high": 0.0, "within_noise": True, "n": 0}
-    rng = random.Random(seed)
-    diffs = []
-    n = len(a)
-    for _ in range(max(1, n_resamples)):
-        idx = [rng.randrange(n) for _ in range(n)]
-        left_mean = sum(a[i] for i in idx) / n
-        right_mean = sum(b[i] for i in idx) / n
-        diffs.append(left_mean - right_mean)
-    diffs.sort()
-    low_i = int((alpha / 2) * (len(diffs) - 1))
-    high_i = int((1 - alpha / 2) * (len(diffs) - 1))
-    diff = (sum(a) / n) - (sum(b) / n)
-    low, high = diffs[low_i], diffs[high_i]
-    return {
-        "diff": round(diff, 4),
-        "low": round(low, 4),
-        "high": round(high, 4),
-        "within_noise": low <= 0.0 <= high,
-        "n": n,
-    }
-
-
-def auroc(scores: Sequence[float], labels: Sequence[bool]) -> Optional[float]:
-    """AUROC for ranking positive labels higher. None if undefined."""
-    pairs = [(float(score), 1 if label else 0) for score, label in zip(scores, labels)]
-    positives = sum(label for _score, label in pairs)
-    negatives = len(pairs) - positives
-    if positives == 0 or negatives == 0:
         return None
-    pairs.sort(key=lambda item: item[0])
-    rank_sum = 0.0
-    for index, (_score, label) in enumerate(pairs, start=1):
-        if label:
-            rank_sum += index
-    # Mann–Whitney U formulation.
-    u = rank_sum - positives * (positives + 1) / 2.0
-    return round(u / (positives * negatives), 4)
+    rng = random.Random(seed)
+    n = len(numbers)
+    means = sorted(sum(numbers[rng.randrange(n)] for _ in range(n)) / n for _ in range(resamples))
+    return {
+        "low": round(means[int((alpha / 2) * (resamples - 1))], 4),
+        "high": round(means[int((1 - alpha / 2) * (resamples - 1))], 4),
+    }
+
+
+def paired_delta(current: Dict[str, float], baseline: Dict[str, float], *, resamples: int = 2000, seed: int = 13) -> Optional[Dict[str, Any]]:
+    """Mean difference (current - baseline) over question ids present in both, with a bootstrap CI.
+
+    Pairing by question removes most between-question variance, so small real changes show up
+    and noise on a handful of questions does not.
+    """
+    shared = sorted(set(current) & set(baseline))
+    if not shared:
+        return None
+    diffs = [float(current[key]) - float(baseline[key]) for key in shared]
+    interval = bootstrap_ci(diffs, resamples=resamples, seed=seed)
+    return {
+        "delta": round(sum(diffs) / len(diffs), 4),
+        "ci": interval,
+        "n": len(shared),
+        "significant": bool(interval and (interval["high"] < 0 or interval["low"] > 0)),
+    }
+
+
+def _round(value: Optional[float]) -> Optional[float]:
+    return round(value, 4) if value is not None else None

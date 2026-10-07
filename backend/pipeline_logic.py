@@ -1,6 +1,6 @@
 """Pure steps from the Needle retrieval diagram.
 
-These functions do not talk to Chroma, Jev, or Gemini. The engine calls them
+These functions do not talk to Chroma, Jev, or OpenRouter. The engine calls them
 so the gates can be tested without network or model downloads.
 """
 
@@ -8,7 +8,7 @@ import json
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple  # Any used by violation details
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class NeedleError(Exception):
@@ -50,19 +50,35 @@ def classify_http_infra_error(status_code: Optional[int], *, timeout: bool = Fal
     return None
 
 
-def infra_error_share(infra_count: int, total: int) -> float:
-    if total <= 0:
-        return 0.0
-    return float(infra_count) / float(total)
-
-
-def infra_errors_exceed_share(infra_count: int, total: int, *, max_share: float = 0.02) -> bool:
-    return infra_error_share(infra_count, total) > float(max_share) + 1e-12
-
-
 def tokenize(text: str) -> List[str]:
     """Lexical tokens used before the embedding model sees the text."""
     return re.findall(r"\w+", (text or "").lower())
+
+
+# Identifiers such as E-104, IP54, ADD-COLD, TERN-SCALE, 4.2.1: exact tokens where meaning lives.
+# A single trailing digit (Tern-3, Q2) usually names a product or period mentioned everywhere, so it is not one.
+_IDENTIFIER = re.compile(r"\b(?:[A-Za-z]{1,10}-?\d{2,}[\w.-]*|[A-Z]{2,}(?:-[A-Z0-9]+)+|\d+(?:\.\d+){2,})\b")
+
+
+def keyword_terms(query: str) -> List[str]:
+    """Terms for the BM25 query. Stopwords stay: BM25's IDF already discounts them, and the
+    hermetic eval ranked worse without them. One- and two-letter tokens and lone digits are noise."""
+    seen: List[str] = []
+    for token in tokenize(query):
+        if (len(token) > 2 or (token.isdigit() and len(token) > 1)) and token not in seen:
+            seen.append(token)
+    return seen
+
+
+def identifier_phrases(query: str) -> List[str]:
+    """Code-like terms as FTS5 phrase queries, e.g. 'E-104' -> '"e 104"'."""
+    phrases: List[str] = []
+    for match in _IDENTIFIER.findall(query or ""):
+        tokens = tokenize(match)
+        phrase = '"' + " ".join(tokens) + '"'
+        if tokens and phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
 
 
 def index_card(header: str, parent_text: str, limit: int = 480) -> str:
@@ -250,138 +266,6 @@ def soft_rrf_ranks(
     return scored
 
 
-def rare_exact_tokens(question: str, *, min_len: int = 5) -> List[str]:
-    """Question tokens long enough to act as exact-term guards."""
-    stop = {
-        "about", "these", "those", "where", "which", "their", "there", "using", "based",
-        "what", "when", "does", "with", "from", "that", "this", "have", "been",
-    }
-    tokens = tokenize(question)
-    return [token for token in tokens if len(token) >= min_len and token not in stop]
-
-
-def chunk_has_exact_term(text: str, terms: Sequence[str]) -> bool:
-    hay = (text or "").lower()
-    return any(term in hay for term in terms)
-
-
-def apply_retrieval_policy(
-    fused_children: List[Dict[str, Any]],
-    jev_scores_by_id: Dict[str, Optional[float]],
-    *,
-    policy: str,
-    jev_threshold: float = 0.20,
-    rrf_k: int = 60,
-    top_n: int = 5,
-    question: str = "",
-    id_key: str = "chunk_id",
-) -> Dict[str, Any]:
-    """Offline policies A–D over fused candidates + optional Jev scores.
-
-    Missing Jev scores are reported; they are never fabricated.
-    """
-    fused = list(fused_children)
-    fused_ranks = {item[id_key]: index for index, item in enumerate(fused, start=1)}
-    missing = [item[id_key] for item in fused if jev_scores_by_id.get(item[id_key]) is None]
-    present = {
-        item_id: float(score)
-        for item_id, score in jev_scores_by_id.items()
-        if score is not None and item_id in fused_ranks
-    }
-    by_id = {item[id_key]: item for item in fused}
-    terms = rare_exact_tokens(question)
-
-    if policy in ("fused_only", "E"):
-        ordered_ids = [item[id_key] for item in fused]
-        kept_ids = ordered_ids[:top_n]
-        return {
-            "policy": policy,
-            "ordered_ids": ordered_ids,
-            "kept_ids": kept_ids,
-            "missing_jev": missing,
-            "scores": {item_id: float(by_id[item_id].get("rrf_score") or 0) for item_id in ordered_ids},
-        }
-
-    if policy == "A":
-        # Hard drop below Jev threshold; order by Jev score.
-        scored = sorted(present.items(), key=lambda item: item[1], reverse=True)
-        kept_ids = [item_id for item_id, score in scored if score >= jev_threshold][:top_n]
-        ordered_ids = [item_id for item_id, _score in scored] + [
-            item_id for item_id in fused_ranks if item_id not in present
-        ]
-        return {
-            "policy": "A",
-            "ordered_ids": ordered_ids,
-            "kept_ids": kept_ids,
-            "missing_jev": missing,
-            "scores": dict(present),
-        }
-
-    jev_ranks = {
-        item_id: rank
-        for rank, (item_id, _score) in enumerate(
-            sorted(present.items(), key=lambda item: item[1], reverse=True),
-            start=1,
-        )
-    }
-    # Unscored items keep a weak fused-only contribution via soft RRF without a Jev term.
-    blended = soft_rrf_ranks(fused_ranks, jev_ranks, k=rrf_k)
-    ordered_ids = [item_id for item_id, _score in blended]
-
-    if policy == "B":
-        kept_ids = ordered_ids[:top_n]
-    elif policy == "C":
-        protected = [item[id_key] for item in fused[:3]]
-        rest = [
-            item_id
-            for item_id in ordered_ids
-            if item_id not in protected and present.get(item_id, 0.0) >= jev_threshold
-        ]
-        # Protect top-3 fused regardless of Jev; fill from thresholded rest then blend order.
-        kept_ids = []
-        for item_id in protected + rest + ordered_ids:
-            if item_id not in kept_ids:
-                kept_ids.append(item_id)
-            if len(kept_ids) >= top_n:
-                break
-    elif policy == "D":
-        # Soft RRF order, but exact-term hits are never dropped from the candidate pool
-        # before taking top_n (they are boosted to stay eligible).
-        guarded = {
-            item_id
-            for item_id in ordered_ids
-            if chunk_has_exact_term(by_id[item_id].get("text") or "", terms)
-        }
-        # Re-order: keep soft order but ensure guarded items among top fused that match
-        # are not excluded — since B already keeps without drops, D equals B plus
-        # forcing guarded fused hits into the top_n window if missing.
-        kept_ids = list(ordered_ids[:top_n])
-        for item_id in ordered_ids:
-            if item_id in guarded and item_id not in kept_ids:
-                # Replace the lowest soft hit if needed.
-                if len(kept_ids) >= top_n:
-                    kept_ids[-1] = item_id
-                else:
-                    kept_ids.append(item_id)
-                break
-        # Stable unique
-        deduped = []
-        for item_id in kept_ids:
-            if item_id not in deduped:
-                deduped.append(item_id)
-        kept_ids = deduped[:top_n]
-    else:
-        raise ValueError(f"Unknown retrieval policy {policy!r}")
-
-    return {
-        "policy": policy,
-        "ordered_ids": ordered_ids,
-        "kept_ids": kept_ids,
-        "missing_jev": missing,
-        "scores": {item_id: score for item_id, score in blended},
-    }
-
-
 _INJECTION = (
     re.compile(r"ignore (all |any |the )?(previous|prior|above) instructions", re.I),
     re.compile(r"disregard (the )?(system|previous|prior)", re.I),
@@ -400,6 +284,27 @@ def injection_match(text: str) -> Optional[str]:
 
 def passage_looks_like_instructions(text: str) -> bool:
     return injection_match(text) is not None
+
+
+_REFUSAL = re.compile(
+    r"\b(?:i|we)\s+(?:can(?:not|'t|’t| not)|could(?:n't|n’t| not)|do(?:n't|n’t| not)|am unable to|was unable to)\s+"
+    r"(?:tell|determine|answer|confirm|see|say)\b"
+    r"|\b(?:the|these|those|provided)\s+(?:documents?|passages?|sources?|context)\s+(?:do(?:es)?\s*(?:not|n't|n’t)|never)\s+"
+    r"(?:say|state|mention|contain|specify|include|give|provide|name|cover)\b"
+    r"|\bno information (?:about|on|regarding)\b"
+    r"|\bis not (?:stated|mentioned|specified|given) in\b",
+    re.I,
+)
+
+
+def is_refusal(answer: str) -> bool:
+    """True when the answer's opening sentence says the documents do not answer the question.
+
+    Only the opening is checked: an answer that gives facts and then notes one missing detail
+    is still an answer.
+    """
+    sentences = split_sentences(answer)
+    return bool(sentences) and bool(_REFUSAL.search(sentences[0]))
 
 
 def split_sentences(answer: str) -> List[str]:
@@ -483,8 +388,13 @@ def deterministic_violation_details(
     contexts: List[Dict[str, Any]],
     *,
     min_quote_chars: int,
+    question: str = "",
 ) -> List[Dict[str, Any]]:
-    """Structured fail-closed checks for citations, quotations, and numbers."""
+    """Structured fail-closed checks for citations, quotations, and numbers.
+
+    Quotations must be verbatim passage text. Numbers may also come from what the writer was
+    shown around the passages (document names, section headings) and from the question itself.
+    """
     details: List[Dict[str, Any]] = []
     limit = len(contexts)
     # Strip citation markers before number scans so [12] is not treated as the number 12.
@@ -516,12 +426,16 @@ def deterministic_violation_details(
                 }
             )
             break
+    number_corpus = "\n".join(
+        [corpus, question or ""]
+        + [f"{context.get('document_name') or ''} {context.get('header_context') or ''}" for context in contexts]
+    )
     # Also ignore bare page markers the writer often copies from the prompt header.
     answer_for_numbers = re.sub(r"\bpage\s+\d+\b", " ", answer_without_citations, flags=re.I)
     for number in re.findall(r"\d[\d,]*(?:\.\d+)?%?", answer_for_numbers):
         if re.fullmatch(r"\d%?", number):
             continue
-        if not corpus_contains_number(corpus, number):
+        if not corpus_contains_number(number_corpus, number):
             details.append(
                 {
                     "kind": "number",
@@ -534,24 +448,46 @@ def deterministic_violation_details(
     return details
 
 
-def deterministic_violations(answer: str, contexts: List[Dict[str, Any]], *, min_quote_chars: int) -> List[str]:
+def missing_required_citation(
+    answer: str,
+    contexts: List[Dict[str, Any]],
+    required_document_ids: Any,
+) -> Optional[Dict[str, Any]]:
+    """An answer that may draw on a "citation required" document must cite its sources.
+
+    The writer is not obliged to use every retrieved passage, so this only fails an answer
+    that carries no citation at all: no valid [n] marker and no document named (the
+    "Source cards" style names documents instead of numbering them).
+    """
+    required = set(required_document_ids or ())
+    gated = [context for context in contexts if context.get("document_id") in required]
+    if not gated:
+        return None
+    cited = {int(number) for number in re.findall(r"\[(\d+)\]", answer or "")}
+    if any(1 <= number <= len(contexts) for number in cited):
+        return None
+    lowered = (answer or "").lower()
+    for context in contexts:
+        stem = str(context.get("document_name") or "").rsplit(".", 1)[0].strip().lower()
+        if stem and stem in lowered:
+            return None
+    name = str(gated[0].get("document_name") or "A source")
+    return {
+        "kind": "missing_citation",
+        "message": f"{name} requires citations, but the answer cites no source.",
+        "offending": name,
+        "passage_text": str(gated[0].get("text") or "")[:240],
+    }
+
+
+def deterministic_violations(
+    answer: str, contexts: List[Dict[str, Any]], *, min_quote_chars: int, question: str = ""
+) -> List[str]:
     """Fail closed when citations, quotations, or numbers are not in the cited text."""
-    return [item["message"] for item in deterministic_violation_details(answer, contexts, min_quote_chars=min_quote_chars)]
-
-
-def assert_identical_passages(writer_passages: List[Dict[str, Any]], checker_passages: List[Dict[str, Any]]) -> None:
-    writer_texts = [str(item.get("text") or "") for item in writer_passages]
-    checker_texts = [str(item.get("text") or "") for item in checker_passages]
-    if writer_texts != checker_texts:
-        raise AssertionError("Writer and checker passages are not byte-identical for the same request.")
-
-
-def recall_at_k(retrieved_ids: List[str], expected_ids: List[str], k: int) -> float:
-    expected = [item for item in expected_ids if item]
-    if not expected:
-        return 1.0
-    found = set(retrieved_ids[: max(0, k)])
-    return len(found.intersection(expected)) / len(set(expected))
+    return [
+        item["message"]
+        for item in deterministic_violation_details(answer, contexts, min_quote_chars=min_quote_chars, question=question)
+    ]
 
 
 def publish_allowed(
