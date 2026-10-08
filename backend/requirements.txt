@@ -11,7 +11,7 @@ python-dotenv==1.2.4
 numpy==2.5.1
 chromadb==1.5.9
 langchain-text-splitters==1.1.2
-langchain-community==0.4.2
 pymupdf==1.28.2
-markitdown[all]==0.1.8
+# Office formats only (not audio, YouTube, or cloud OCR extras).
+markitdown[docx,pptx,xlsx]==0.1.8
 jev-reranker==0.1.2

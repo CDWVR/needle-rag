@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from markitdown import MarkItDown
 
@@ -60,6 +59,16 @@ def header_context(metadata: Dict[str, Any]) -> str:
     return " > ".join(part for part in parts if part)
 
 
+def _pdf_pages(path: str) -> list:
+    """Text of each page, in order (empty string for pages with no text layer)."""
+    try:
+        import pymupdf as fitz
+    except ImportError:  # older PyMuPDF releases only ship the `fitz` name
+        import fitz
+    with fitz.open(path) as document:
+        return [page.get_text() for page in document]
+
+
 def _ocr_pdf(path: str) -> str:
     if os.getenv("OCR_ENABLED", "false").strip().lower() not in {"1", "true", "yes"}:
         return ""
@@ -94,18 +103,18 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
             temp_path = handle.name
 
         if file_type == "application/pdf" or filename.lower().endswith(".pdf"):
-            raw_docs = PyMuPDFLoader(temp_path).load()
+            page_texts = _pdf_pages(temp_path)
             ftype = "pdf"
-            num_pages = len(raw_docs)
-            if num_pages == 0 and not raw_docs:
+            num_pages = len(page_texts)
+            if not num_pages:
                 raise ValueError("No text could be extracted.")
             md_splits = []
-            for doc in raw_docs:
-                page_text = doc.page_content.strip()
+            for page_number, page_text in enumerate(page_texts, start=1):
+                page_text = page_text.strip()
                 if not page_text:
                     continue
                 for split in md_splitter.split_text(page_text):
-                    split.metadata["page"] = doc.metadata.get("page", 0) + 1
+                    split.metadata["page"] = page_number
                     md_splits.append(split)
         else:
             converted = MarkItDown().convert(temp_path)

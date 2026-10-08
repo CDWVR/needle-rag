@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+venv
+**/__pycache__
+**/*.pyc
+docs
+*.md
+!README.md
+backend/chroma_store
+backend/uploads
+backend/workspace.db
+backend/secrets
+backend/tei_model_cache
+backend/eval/reports
+backend/tests

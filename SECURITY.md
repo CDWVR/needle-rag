@@ -31,6 +31,17 @@ Needle is single-tenant: everyone with the token sees the same workspace. There 
 permissions. If you need them, put Needle behind an identity-aware proxy (for example an SSO
 gateway) and keep the token secret.
 
+## Public demo mode
+
+`NEEDLE_DEMO_MODE=true` turns Needle into a read-only public demo (see `docs/deploy-railway.md`).
+Visitors need no token but can only read the sample corpus and ask questions; every other route
+returns 403 and the owner token still unlocks full control. Each visitor sees only their own
+conversations (a random HttpOnly cookie id), other visitors' question text is never shown in
+analytics, questions are limited to 500 characters, and per-client rate limits plus a global daily
+question cap (`NEEDLE_DEMO_DAILY_QUESTIONS`, default 300) bound spend. Because visitors cannot
+upload, hostile documents cannot be introduced; the only prompt-injection text is the deliberate
+sample in the eval corpus. Set a credit limit on the OpenRouter key as the final backstop.
+
 ## Deploying
 
 - `python main.py` binds `127.0.0.1`. To serve a network, set `NEEDLE_HOST=0.0.0.0` and list your

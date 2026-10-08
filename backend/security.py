@@ -33,9 +33,21 @@ SESSION_COOKIE = "needle_session"
 CSRF_HEADER = "x-needle-csrf"
 SESSION_TTL_SECONDS = env_int("NEEDLE_SESSION_HOURS", 12) * 3600
 AUTH_DISABLED = env_bool("NEEDLE_AUTH_DISABLED", False)
+# Public demo: anyone may read the sample corpus and ask questions; only the signed-in owner may change anything.
+DEMO_MODE = env_bool("NEEDLE_DEMO_MODE", False)
+DEMO_DAILY_QUESTIONS = env_int("NEEDLE_DEMO_DAILY_QUESTIONS", 300)
+DEMO_MAX_QUESTION_CHARS = env_int("NEEDLE_DEMO_MAX_QUESTION_CHARS", 500)
+VISITOR_COOKIE = "needle_visitor"
 COOKIE_SECURE = env_bool("NEEDLE_COOKIE_SECURE", False)
 # Paths reachable without a session: the page shell, static assets, health, and sign-in itself.
-PUBLIC_PATHS = {"/", "/health", "/api/auth/login", "/api/auth/session"}
+PUBLIC_PATHS = {"/", "/health", "/api/auth/login", "/api/auth/logout", "/api/auth/session"}
+# What a demo visitor may call. Everything else needs the owner session.
+VISITOR_ROUTES = {
+    ("GET", "/api/settings"), ("GET", "/api/conversations"), ("POST", "/api/conversations"),
+    ("GET", "/api/documents"), ("GET", "/api/index"), ("GET", "/api/index/versions"), ("GET", "/api/eval/latest"),
+    ("GET", "/api/analytics"), ("POST", "/api/chat"),
+}
+VISITOR_PREFIXES = (("GET", "/api/conversations/"), ("GET", "/api/documents/"), ("POST", "/api/messages/"))
 PUBLIC_PREFIXES = ("/static/",)
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -115,12 +127,34 @@ def set_session_cookie(response: Response, request: Request) -> None:
 
 
 def is_authenticated(request: Request) -> bool:
+    """True for the owner: a valid token or session (or auth switched off for local development)."""
     if AUTH_DISABLED:
         return True
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer ") and token_matches(header[7:].strip()):
         return True
     return session_valid(request.cookies.get(SESSION_COOKIE))
+
+
+def role_of(request: Request) -> str:
+    return "owner" if is_authenticated(request) else ("visitor" if DEMO_MODE else "anonymous")
+
+
+def visitor_allowed(method: str, path: str) -> bool:
+    if (method, path) in VISITOR_ROUTES:
+        return True
+    return any(method == m and path.startswith(prefix) and not path.endswith("/file") for m, prefix in VISITOR_PREFIXES)
+
+
+def conversation_owner(request: Request) -> str:
+    """Whose conversations this request may see: the owner's, or the visitor's own."""
+    if getattr(request.state, "role", "owner") == "owner":
+        return "owner"
+    return "visitor:" + getattr(request.state, "visitor_id", "none")
+
+
+def _clean_visitor_id(value: Optional[str]) -> Optional[str]:
+    return value if value and re.fullmatch(r"[A-Za-z0-9_-]{20,64}", value) else None
 
 
 def _same_origin(request: Request) -> bool:
@@ -137,15 +171,33 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        request.state.role = role_of(request)
+        new_visitor = None
+        if DEMO_MODE:
+            visitor = _clean_visitor_id(request.cookies.get(VISITOR_COOKIE))
+            if not visitor:
+                visitor = new_visitor = secrets.token_urlsafe(24)
+            request.state.visitor_id = visitor
         if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
-            return await call_next(request)
-        if not is_authenticated(request):
+            return self._with_visitor_cookie(await call_next(request), request, new_visitor)
+        if request.state.role == "anonymous":
             return JSONResponse({"detail": "Sign in to continue."}, status_code=401)
         uses_cookie = not request.headers.get("authorization", "").lower().startswith("bearer ")
         if uses_cookie and request.method not in SAFE_METHODS and not AUTH_DISABLED:
             if request.headers.get(CSRF_HEADER) != "1" or not _same_origin(request):
                 return JSONResponse({"detail": "Request blocked: missing or cross-site request header."}, status_code=403)
-        return await call_next(request)
+        if request.state.role == "visitor" and not visitor_allowed(request.method, path):
+            return JSONResponse({"detail": "This is disabled in the public demo."}, status_code=403)
+        return self._with_visitor_cookie(await call_next(request), request, new_visitor)
+
+    @staticmethod
+    def _with_visitor_cookie(response: Response, request: Request, new_visitor: Optional[str]) -> Response:
+        if new_visitor:
+            response.set_cookie(
+                VISITOR_COOKIE, new_visitor, max_age=30 * 24 * 3600, httponly=True, samesite="strict",
+                secure=COOKIE_SECURE or request.url.scheme == "https", path="/",
+            )
+        return response
 
 
 # --- response headers ---------------------------------------------------------------
@@ -188,6 +240,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 RATE_LIMITS = {
     "login": (10, 300),     # 10 attempts per 5 minutes: slows token guessing
     "chat": (30, 60),
+    "visitor_chat": (6, 60),        # public demo: a few questions a minute...
+    "visitor_chat_hour": (40, 3600),  # ...and a bounded number per hour, per client
     "upload": (12, 60),
     "refresh": (3, 300),
     "write": (120, 60),
@@ -233,6 +287,16 @@ def client_id(request: Request) -> str:
 
 def rate_limit(request: Request, bucket: str) -> None:
     limiter.check(bucket, client_id(request))
+
+
+def demo_question_gate(request: Request, questions_today: int) -> None:
+    """Public-demo limits on spend: tighter per-client rates and a global daily cap."""
+    if getattr(request.state, "role", "owner") != "visitor":
+        return
+    if questions_today >= DEMO_DAILY_QUESTIONS:
+        raise HTTPException(status_code=429, detail="The demo has reached today's question limit. Try again tomorrow.")
+    limiter.check("visitor_chat", client_id(request))
+    limiter.check("visitor_chat_hour", client_id(request))
 
 
 # --- uploads ---------------------------------------------------------------------------

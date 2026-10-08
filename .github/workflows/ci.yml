@@ -52,7 +52,7 @@ jobs:
           --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815
       - name: API security tests
         working-directory: backend
-        run: python -m unittest tests.test_api
+        run: python -m unittest tests.test_api tests.test_demo
       - name: Offline eval (retrieval gate)
         working-directory: backend
         env:

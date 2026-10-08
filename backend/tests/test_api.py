@@ -95,6 +95,18 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(self.client.get("/docs").status_code, 401)
 
 
+class ReadEndpointTests(unittest.TestCase):
+    """Every read the UI makes on load must work with the query strings the UI sends."""
+
+    def test_ui_reads(self):
+        client = TestClient(main.app)
+        for path in ("/api/settings", "/api/documents", "/api/index", "/api/index/versions", "/api/eval/latest",
+                     "/api/conversations", "/api/conversations?q=100%25_", "/api/analytics?days=7",
+                     "/api/analytics?days=30", "/api/analytics?days=90", "/api/analytics/export?days=30"):
+            self.assertEqual(client.get(path, headers=BEARER).status_code, 200, path)
+        self.assertEqual(client.get("/api/analytics?days=5", headers=BEARER).status_code, 400)
+
+
 class HeaderTests(unittest.TestCase):
     def test_security_headers_on_pages_and_errors(self):
         client = TestClient(main.app)

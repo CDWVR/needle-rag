@@ -104,6 +104,8 @@ class WorkspaceStore:
         self._ensure_column("messages", "rewritten_query", "TEXT")
         self._ensure_column("document_policy", "content_hash", "TEXT")
         self._ensure_column("document_policy", "deleted", "INTEGER NOT NULL DEFAULT 0")
+        # Conversations belong to a visitor id; the signed-in owner (and every non-demo install) is 'owner'.
+        self._ensure_column("conversations", "owner", "TEXT NOT NULL DEFAULT 'owner'")
         self._ensure_column("events", "outcome", "TEXT")
         self._ensure_column("events", "retrieval_ms", "INTEGER")
         self._ensure_column("events", "relevance", "REAL")
@@ -185,52 +187,61 @@ class WorkspaceStore:
             self.conn.commit()
         return self.settings()
 
-    def list_conversations(self, query: str = "") -> List[Dict[str, Any]]:
+    def list_conversations(self, query: str = "", owner: str = "owner") -> List[Dict[str, Any]]:
         sql = """
-            SELECT c.*, (
+            SELECT c.id, c.title, c.document_id, c.created_at, c.updated_at, (
                 SELECT COUNT(*) FROM messages m
                 WHERE m.conversation_id = c.id AND m.role = 'assistant' AND m.sources_json IS NOT NULL AND m.sources_json != '[]'
             ) AS source_threads
             FROM conversations c
+            WHERE c.owner = ?
         """
-        params: List[Any] = []
+        params: List[Any] = [owner]
         if query.strip():
-            sql += " WHERE c.title LIKE ?"
-            params.append(f"%{query.strip()}%")
-        sql += " ORDER BY c.updated_at DESC"
+            sql += " AND c.title LIKE ? ESCAPE '\\'"
+            escaped = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params.append(f"%{escaped}%")
+        sql += " ORDER BY c.updated_at DESC LIMIT 200"
         with self._lock:
             rows = self.conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
-    def ensure_conversation(self, conversation_id: Optional[str], title: str, document_id: Optional[str]) -> str:
+    def ensure_conversation(
+        self, conversation_id: Optional[str], title: str, document_id: Optional[str], owner: str = "owner"
+    ) -> str:
         now = _now()
         with self._lock:
             if conversation_id:
-                row = self.conn.execute("SELECT id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+                # Someone else's conversation id is treated as unknown, never as a hint that it exists.
+                row = self.conn.execute(
+                    "SELECT id FROM conversations WHERE id = ? AND owner = ?", (conversation_id, owner)
+                ).fetchone()
                 if row:
                     self.conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
                     self.conn.commit()
                     return conversation_id
             new_id = str(uuid.uuid4())
             self.conn.execute(
-                "INSERT INTO conversations (id, title, document_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (new_id, title.strip()[:120] or "New conversation", document_id, now, now),
+                "INSERT INTO conversations (id, title, document_id, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)",
+                (new_id, title.strip()[:120] or "New conversation", document_id, now, now, owner),
             )
             self.conn.commit()
             return new_id
 
-    def conversation_exists(self, conversation_id: str) -> bool:
+    def conversation_exists(self, conversation_id: str, owner: str = "owner") -> bool:
         with self._lock:
-            row = self.conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+            row = self.conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ? AND owner = ?", (conversation_id, owner)
+            ).fetchone()
         return row is not None
 
-    def create_conversation(self) -> Dict[str, Any]:
+    def create_conversation(self, owner: str = "owner") -> Dict[str, Any]:
         now = _now()
         new_id = str(uuid.uuid4())
         with self._lock:
             self.conn.execute(
-                "INSERT INTO conversations (id, title, document_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)",
-                (new_id, "New conversation", now, now),
+                "INSERT INTO conversations (id, title, document_id, created_at, updated_at, owner) VALUES (?, ?, NULL, ?, ?, ?)",
+                (new_id, "New conversation", now, now, owner),
             )
             self.conn.commit()
         return {"id": new_id, "title": "New conversation", "document_id": None, "created_at": now, "updated_at": now}
@@ -305,11 +316,17 @@ class WorkspaceStore:
             self.conn.execute("UPDATE messages SET rewritten_query = ? WHERE id = ?", (rewritten[:500], message_id))
             self.conn.commit()
 
-    def set_feedback(self, message_id: str, rating: str) -> bool:
+    def set_feedback(self, message_id: str, rating: str, owner: str = "owner") -> bool:
         if rating not in {"helpful", "unhelpful"}:
             return False
         with self._lock:
-            row = self.conn.execute("SELECT id FROM messages WHERE id = ? AND role = 'assistant'", (message_id,)).fetchone()
+            row = self.conn.execute(
+                """
+                SELECT m.id FROM messages m JOIN conversations c ON c.id = m.conversation_id
+                WHERE m.id = ? AND m.role = 'assistant' AND c.owner = ?
+                """,
+                (message_id, owner),
+            ).fetchone()
             if not row:
                 return False
             self.conn.execute(
@@ -362,6 +379,13 @@ class WorkspaceStore:
                 ),
             )
             self.conn.commit()
+
+    def questions_today(self) -> int:
+        """Questions asked since 00:00 UTC; the public demo's daily cap counts these."""
+        start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00")
+        with self._lock:
+            row = self.conn.execute("SELECT COUNT(*) AS n FROM events WHERE created_at >= ?", (start,)).fetchone()
+        return int(row["n"])
 
     def record_run(self, name: str, detail: str, status: str) -> None:
         with self._lock:
