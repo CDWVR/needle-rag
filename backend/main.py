@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
@@ -59,6 +60,11 @@ ingestion = IngestionQueue(workspace, UPLOAD_DIR)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if security.DEMO_MODE:
+        from demo import seed_demo_corpus
+
+        # Background, so the server answers health checks while the sample documents index.
+        threading.Thread(target=seed_demo_corpus, args=(workspace,), name="demo-seed", daemon=True).start()
     yield
     ingestion.shutdown(wait=False)
 
@@ -82,10 +88,18 @@ if _cors:
     # Only needed when another origin hosts the UI; the bundled UI is same-origin.
     app.add_middleware(CORSMiddleware, allow_origins=_cors, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
                        allow_headers=["content-type", security.CSRF_HEADER, "authorization"], allow_credentials=True)
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=[h.strip() for h in env_str("NEEDLE_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",") if h.strip()],
-)
+def _allowed_hosts() -> list:
+    hosts = [h.strip() for h in env_str("NEEDLE_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",") if h.strip()]
+    # On Railway the public domain is provided, and its health checker calls with its own Host header.
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+        hosts.append(railway_domain)
+    if os.getenv("RAILWAY_ENVIRONMENT", "").strip():
+        hosts.append("healthcheck.railway.app")
+    return hosts
+
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts())
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
@@ -206,6 +220,13 @@ def _eval_summary(suite: str) -> Optional[dict]:
     return {key: report.get(key) for key in ("suite", "tier", "finished_at", "commit", "questions", "metrics", "gate")}
 
 
+def _analytics_days(days: int) -> int:
+    # Not a Literal[...] parameter: query values arrive as strings and would be rejected.
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=400, detail="Choose 7, 30, or 90 days.")
+    return days
+
+
 def _sse(payload) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
@@ -225,7 +246,14 @@ def health_check():
 
 @app.get("/api/auth/session")
 def read_session(request: Request):
-    return {"authenticated": security.is_authenticated(request), "auth_disabled": security.AUTH_DISABLED}
+    role = request.state.role
+    return {
+        # In the public demo a visitor is "authenticated" for reading; only the owner can change anything.
+        "authenticated": role in {"owner", "visitor"},
+        "role": role,
+        "demo": security.DEMO_MODE,
+        "auth_disabled": security.AUTH_DISABLED,
+    }
 
 
 @app.post("/api/auth/login")
@@ -259,25 +287,25 @@ def write_settings(payload: SettingsPayload):
 
 
 @app.get("/api/conversations")
-def read_conversations(q: str = Query("", max_length=200)):
-    return {"conversations": workspace.list_conversations(q)}
+def read_conversations(request: Request, q: str = Query("", max_length=200)):
+    return {"conversations": workspace.list_conversations(q, security.conversation_owner(request))}
 
 
 @app.post("/api/conversations")
-def create_conversation():
-    return workspace.create_conversation()
+def create_conversation(request: Request):
+    return workspace.create_conversation(security.conversation_owner(request))
 
 
 @app.get("/api/conversations/{conversation_id}")
-def read_conversation(conversation_id: str = Path(pattern=UUID)):
-    if not workspace.conversation_exists(conversation_id):
+def read_conversation(request: Request, conversation_id: str = Path(pattern=UUID)):
+    if not workspace.conversation_exists(conversation_id, security.conversation_owner(request)):
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"messages": workspace.messages(conversation_id)}
 
 
 @app.post("/api/messages/{message_id}/feedback")
-def save_feedback(payload: FeedbackPayload, message_id: str = Path(pattern=UUID)):
-    if not workspace.set_feedback(message_id, payload.rating):
+def save_feedback(payload: FeedbackPayload, request: Request, message_id: str = Path(pattern=UUID)):
+    if not workspace.set_feedback(message_id, payload.rating, security.conversation_owner(request)):
         raise HTTPException(status_code=400, detail="Feedback could not be saved for that answer.")
     return {"ok": True, "rating": payload.rating}
 
@@ -394,12 +422,17 @@ def reconcile():
 # --- analytics -------------------------------------------------------------------------------
 
 @app.get("/api/analytics")
-def read_analytics(days: Literal[7, 30, 90] = 30):
-    return workspace.analytics(days)
+def read_analytics(request: Request, days: int = Query(30)):
+    report = workspace.analytics(_analytics_days(days))
+    if request.state.role == "visitor":
+        # Aggregate numbers only: other visitors' question text must not be visible.
+        report = {**report, "gaps": [], "gaps_no_coverage": [], "gaps_check_failed": []}
+    return report
 
 
 @app.get("/api/analytics/export")
-def export_analytics(days: Literal[7, 30, 90] = 30):
+def export_analytics(days: int = Query(30)):
+    days = _analytics_days(days)
     report = workspace.analytics(days)
     lines = ["day,questions,grounded"] + [f"{p['day']},{p['questions']},{p['grounded']}" for p in report["series"]]
     return StreamingResponse(
@@ -502,8 +535,15 @@ def chat(payload: ChatRequest, request: Request):
     query = payload.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    if request.state.role == "visitor":
+        if len(query) > security.DEMO_MAX_QUESTION_CHARS:
+            raise HTTPException(
+                status_code=400, detail=f"Demo questions are limited to {security.DEMO_MAX_QUESTION_CHARS} characters."
+            )
+        security.demo_question_gate(request, workspace.questions_today())
     settings = workspace.settings()
-    conversation_id = workspace.ensure_conversation(payload.conversation_id, query, payload.document_id)
+    owner = security.conversation_owner(request)
+    conversation_id = workspace.ensure_conversation(payload.conversation_id, query, payload.document_id, owner)
     history = [
         {"role": message["role"], "content": message["content"]}
         for message in workspace.messages(conversation_id)[-HISTORY_TURNS:]

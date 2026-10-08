@@ -20,7 +20,17 @@ const state = {
   uploading: false,
   replaceId: null,
   activeDocumentId: null,
+  role: "owner",
+  demo: false,
 };
+
+const isOwner = () => state.role === "owner";
+const SAMPLE_QUESTIONS = [
+  "How long did the Fleet Manager outage in March 2026 last, and what caused it?",
+  "What is the rated payload of the Tern-3 cart?",
+  "How did the nightly hotel cap change between the 2025 and 2026 travel policies?",
+  "What gates must a second lidar supplier pass before a purchase order is raised?",
+];
 
 const pageLabels = {
   ask: "Ask",
@@ -152,7 +162,10 @@ function setInspector(open) {
 }
 
 function showPage(page, { updateHash = true } = {}) {
-  if (!pageLabels[page]) page = "ask";
+  if (!pageLabels[page] || (page === "settings" && !isOwner())) {
+    page = "ask";
+    updateHash = true; // do not leave a page the viewer cannot open in the address bar
+  }
   state.page = page;
   if (updateHash) {
     const hash = page === "document" && state.activeDocumentId ? `#document/${state.activeDocumentId}` : `#${page}`;
@@ -308,9 +321,13 @@ function renderConversation() {
     root.innerHTML = `
       <div class="home-empty">
         <div class="answer-kicker"><span>Grounded answers</span></div>
-        <h2>Ask across the documents you have indexed.</h2>
-        <p>Upload a source, then ask a question. Answers stay attached to the passages Jev keeps.</p>
+        <h2>${state.demo ? "Ask a question about the sample documents." : "Ask across the documents you have indexed."}</h2>
+        <p>${state.demo ? "This demo has a small set of fictional company documents loaded: manuals, policies, an incident report, and pricing. Every answer cites the passages it came from, and the system says so when the documents do not answer." : "Upload a source, then ask a question. Answers stay attached to the passages Jev keeps."}</p>
+        ${state.demo ? `<div class="sample-questions">${SAMPLE_QUESTIONS.map((q) => `<button type="button" class="sample-question" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`).join("")}</div>` : ""}
       </div>`;
+    root.querySelectorAll(".sample-question").forEach((button) => {
+      listen(button, "click", () => sendQuestion(button.dataset.q));
+    });
     $("#inspectorBody").innerHTML = `<p class="empty-note">Ask a question to see the evidence for the answer.</p>`;
     return;
   }
@@ -696,7 +713,7 @@ async function renderKnowledge() {
       <header class="page-header">
         <div><div class="section-eyebrow">Knowledge operations</div><h1>Knowledge base</h1><p>Curate the source material that can be searched, cited, and used for grounded answers.</p></div>
         <div class="page-actions">
-          <button class="btn primary" id="uploadButton" type="button">Upload files</button>
+          <button class="btn primary" id="uploadButton" type="button" data-owner>Upload files</button>
         </div>
       </header>
       <div class="stat-grid">
@@ -824,15 +841,15 @@ async function renderDocument() {
           <p>${escapeHtml(doc.name)} · ${escapeHtml(doc.collection || "General")} collection · ${doc.chunk_count || 0} chunks · ${doc.max_page || 0} page${doc.max_page === 1 ? "" : "s"}${doc.uploaded_at ? ` · added ${escapeHtml(when(doc.uploaded_at).toLowerCase())}` : ""}</p>
         </div>
         <div class="page-actions">
-          <button class="btn" id="replaceFile" type="button">Replace file</button>
-          <button class="btn dark" id="openOriginal" type="button" ${doc.downloadable && state.settings?.allow_downloads !== false ? "" : "disabled title=\"The original file is not available\""}>Open original ↗</button>
-          <button class="btn danger" id="deleteDoc" type="button">Delete</button>
+          <button class="btn" id="replaceFile" type="button" data-owner>Replace file</button>
+          <button class="btn dark" id="openOriginal" type="button" data-owner ${doc.downloadable && state.settings?.allow_downloads !== false ? "" : "disabled title=\"The original file is not available\""}>Open original ↗</button>
+          <button class="btn danger" id="deleteDoc" type="button" data-owner>Delete</button>
         </div>
       </header>
       <div class="doc-layout">
         <article class="panel document-preview" id="documentPreview">${documentPreview(doc.passages || [], doc.passage_count)}</article>
         <aside class="stack">
-          <section class="panel">
+          <section class="panel" data-owner>
             <div class="panel-head"><div><h2>Index record</h2><p>Saved with this document</p></div></div>
             <div class="form-block">
               <div class="switch-row"><div><strong>Included in answers</strong><p>When off, retrieval skips this file</p></div><button type="button" class="switch ${doc.included ? "on" : ""}" id="includedSwitch" role="switch" aria-pressed="${doc.included ? "true" : "false"}"></button></div>
@@ -960,8 +977,8 @@ async function renderPipeline() {
         <div><div class="section-eyebrow">Index architecture</div><h1>Pipeline</h1><p>Ingestion, retrieval, Jev reranking, and the grounding check for the active index.</p></div>
         <div class="page-actions">
           <button class="btn" id="viewRegistry" type="button">View registry</button>
-          <button class="btn" id="reconcileIndex" type="button">Reconcile</button>
-          <button class="btn primary" id="refreshIndex" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>Refresh index</button>
+          <button class="btn" id="reconcileIndex" type="button" data-owner>Reconcile</button>
+          <button class="btn primary" id="refreshIndex" type="button" data-owner><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>Refresh index</button>
         </div>
       </header>
       ${driftNote}
@@ -1083,7 +1100,7 @@ async function showRegistry() {
       (item) => `<tr><td><strong>${escapeHtml(String(item.version_id).slice(0, 8))}</strong><br><small>${escapeHtml(item.collection_name)}</small></td><td><span class="status ${item.status === "active" ? "" : "sync"}">${escapeHtml(item.status)}</span></td><td>${escapeHtml(item.embedding_model)}<br><small>${escapeHtml(item.embed_style)} · ${escapeHtml(item.chunking)}</small></td><td>${item.chunk_count ?? "—"}</td><td>${escapeHtml(when(item.activated_at || item.created_at))}</td></tr>`
     )
     .join("");
-  const canRollBack = versions.some((item) => item.status === "retired");
+  const canRollBack = isOwner() && versions.some((item) => item.status === "retired");
   openModal(
     "Index registry",
     `<div class="table-scroll"><table class="data-table"><thead><tr><th>Version</th><th>Status</th><th>Model</th><th>Chunks</th><th>When</th></tr></thead><tbody>${rows || `<tr><td colspan="5"><p class="empty-note">No versions recorded.</p></td></tr>`}</tbody></table></div>`,
@@ -1127,7 +1144,7 @@ async function renderAnalytics() {
         <div><div class="section-eyebrow">Quality intelligence</div><h1>Analytics</h1><p>Adoption, answer quality, and coverage gaps from questions this workspace has actually asked.</p></div>
         <div class="page-actions">
           <div class="segmented" id="range">${[7, 30, 90].map((days) => `<button type="button" data-days="${days}" class="${days === state.analyticsDays ? "active" : ""}">${days}D</button>`).join("")}</div>
-          <button class="btn" id="exportReport" type="button">Export report</button>
+          <button class="btn" id="exportReport" type="button" data-owner>Export report</button>
         </div>
       </header>
       <div class="stat-grid">
@@ -1154,7 +1171,7 @@ async function renderAnalytics() {
         </section>
       </div>
       <section class="panel" style="margin-top:14px">
-        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>No coverage: nothing strong enough was found. Check failed: the draft was the problem.</p></div><button class="btn small" id="gapUpload" type="button">Add source</button></div>
+        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>No coverage: nothing strong enough was found. Check failed: the draft was the problem.</p></div><button class="btn small" id="gapUpload" type="button" data-owner>Add source</button></div>
         <div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best match</th><th>Last asked</th><th>Action</th></tr></thead><tbody>
           ${gaps.map((gap, index) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Draft failed the check" : "No strong passage"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : `${Number(gap.best_similarity).toFixed(2)} similarity`}</td><td>${escapeHtml(when(gap.last_seen))}</td><td><button class="btn small" type="button" data-gap="${index}">${gap.outcome === "check_failed" ? "Ask again" : "Add source"}</button></td></tr>`).join("") || `<tr><td colspan="6"><p class="empty-note">No withheld questions in this range.</p></td></tr>`}
         </tbody></table></div>
@@ -1405,13 +1422,14 @@ function closeModal(force = false) {
 
 let signInOpen = false;
 
-function showSignIn(message = "") {
-  if (signInOpen) return;
-  signInOpen = true;
+function showSignIn(message = "", { optional = false } = {}) {
+  if (signInOpen && !optional) return;
+  signInOpen = !optional;
   openModal(
-    "Sign in to Needle",
-    `<p>Enter the workspace access token. It is set as <code>NEEDLE_ACCESS_TOKEN</code> on the server, or printed in the server console on first start.</p>${message ? `<p class="form-error">${escapeHtml(message)}</p>` : ""}<div class="field"><label for="accessToken">Access token</label><input id="accessToken" type="password" autocomplete="current-password" /></div>`,
+    optional ? "Owner sign-in" : "Sign in to Needle",
+    `<p>${optional ? "Enter the owner access token to upload documents and change settings." : "Enter the workspace access token. It is set as <code>NEEDLE_ACCESS_TOKEN</code> on the server, or printed in the server console on first start."}</p>${message ? `<p class="form-error">${escapeHtml(message)}</p>` : ""}<div class="field"><label for="accessToken">Access token</label><input id="accessToken" type="password" autocomplete="current-password" /></div>`,
     [
+      ...(optional ? [{ label: "Cancel", onClick: () => closeModal() }] : []),
       {
         label: "Sign in",
         primary: true,
@@ -1423,7 +1441,7 @@ function showSignIn(message = "") {
           } catch (err) {
             signInOpen = false;
             closeModal(true);
-            showSignIn(err.message);
+            showSignIn(err.message, { optional });
             return;
           }
           signInOpen = false;
@@ -1432,7 +1450,7 @@ function showSignIn(message = "") {
         },
       },
     ],
-    { locked: true }
+    { locked: !optional }
   );
   listen($("#accessToken"), "keydown", (event) => {
     if (event.key === "Enter") $("#modalActions .btn.primary")?.click();
@@ -1443,6 +1461,11 @@ async function signOut() {
   await api.logout();
   state.conversationId = null;
   state.messages = [];
+  if (state.demo) {
+    location.hash = "#ask";
+    location.reload();
+    return;
+  }
   showSignIn();
 }
 
@@ -1709,16 +1732,29 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("#threadsToggle").setAttribute("aria-expanded", "false");
-listen($("#avatar"), "click", () =>
+listen($("#avatar"), "click", () => {
+  if (state.role === "visitor") {
+    showSignIn("", { optional: true });
+    return;
+  }
   openModal("Sign out?", "<p>You will need the access token to sign in again.</p>", [
     { label: "Cancel", onClick: () => closeModal() },
     { label: "Sign out", danger: true, onClick: async () => { closeModal(); await signOut(); } },
-  ])
-);
+  ]);
+});
 window.addEventListener("needle:auth-required", () => showSignIn("Your session ended. Sign in again."));
 if (/Mac|iPhone|iPad/.test(navigator.platform || "")) $("#searchShortcut").textContent = "⌘K";
 $("#sourceToggle").setAttribute("aria-expanded", "false");
 $("#voiceButton").setAttribute("aria-pressed", "false");
+
+function applyRole(session) {
+  state.role = session.role || "owner";
+  state.demo = Boolean(session.demo);
+  const visitor = state.role === "visitor";
+  $("#app").classList.toggle("readonly", visitor);
+  $("#demoBadge").hidden = !state.demo;
+  $("#avatar").title = visitor ? "Owner sign-in" : "Sign out";
+}
 
 async function boot() {
   const session = await api.session();
@@ -1726,6 +1762,7 @@ async function boot() {
     showSignIn();
     return;
   }
+  applyRole(session);
   await refreshShell();
   renderConversation();
   if (location.hash && location.hash !== "#ask") routeFromHash();

@@ -102,6 +102,12 @@ Jev is called through OpenRouter, so `OPENROUTER_API_KEY` covers reranking and a
 
 ---
 
+### Public demo
+
+`NEEDLE_DEMO_MODE=true` serves a read-only demo with sample documents; visitors can ask questions
+but cannot change anything. A `Dockerfile` and `railway.toml` are included; see
+[docs/deploy-railway.md](docs/deploy-railway.md).
+
 ### Code map (`backend/`)
 
 | Module | Responsibility |
@@ -109,6 +115,7 @@ Jev is called through OpenRouter, so `OPENROUTER_API_KEY` covers reranking and a
 | `main.py` | HTTP routes and middleware wiring |
 | `security.py` | Sign-in, sessions, CSRF, security headers, rate limits, upload validation |
 | `jobs.py` | Background ingestion queue |
+| `demo.py` | Public-demo sample-corpus seeding |
 | `config.py` | Every environment setting, read once |
 | `ingest.py` | Parse, chunk, embed, and store an upload |
 | `pipeline.py` | The question path: condense, hybrid search, Jev, write, check |
