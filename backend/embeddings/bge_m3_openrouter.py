@@ -68,45 +68,6 @@ class BgeM3EmbeddingClient:
             "cache_misses": 0,
         }
 
-    @staticmethod
-    def verify_model_listing() -> Dict[str, Any]:
-        """Fetch OpenRouter endpoints metadata for the configured slug."""
-        url = f"https://openrouter.ai/api/v1/models/{BGE_M3_MODEL}/endpoints"
-        with httpx.Client(timeout=30) as client:
-            response = client.get(url)
-        response.raise_for_status()
-        payload = response.json().get("data") or {}
-        endpoints = payload.get("endpoints") or []
-        prices = []
-        providers = []
-        for endpoint in endpoints:
-            pricing = endpoint.get("pricing") or {}
-            prompt = float(pricing.get("prompt") or 0)
-            prices.append(prompt * 1_000_000)
-            providers.append(
-                {
-                    "provider_name": endpoint.get("provider_name"),
-                    "tag": endpoint.get("tag"),
-                    "price_per_m_tokens": prompt * 1_000_000,
-                    "context_length": endpoint.get("context_length"),
-                }
-            )
-        return {
-            "slug": payload.get("id") or BGE_M3_MODEL,
-            "name": payload.get("name"),
-            "modality": (payload.get("architecture") or {}).get("modality"),
-            "price_per_m_tokens_usd": min(prices) if prices else BGE_M3_PRICE_PER_M,
-            "providers": providers,
-        }
-
-    def estimate_cost_usd(self, texts: Sequence[str]) -> float:
-        # Conservative: 1 token ≈ 4 chars, clamp each input to max_input_tokens.
-        tokens = 0
-        for text in texts:
-            approx = max(1, (len(text or "") + 3) // 4)
-            tokens += min(approx, self.max_input_tokens)
-        return (tokens / 1_000_000.0) * BGE_M3_PRICE_PER_M
-
     def _truncate(self, text: str) -> str:
         # Approximate token clamp without a local tokenizer download.
         max_chars = self.max_input_tokens * 4

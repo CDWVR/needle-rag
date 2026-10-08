@@ -554,3 +554,5 @@ button.mark { border: 0; padding: 0; cursor: pointer; }
 .modal-card .data-table { min-width: 620px; }
 .thread-list .thread-label:first-child { margin-top: 4px; }
 .answer + .callout { margin-top: 18px; }
+.form-error { color: var(--coral) !important; }
+#modal .field input { width: 100%; }

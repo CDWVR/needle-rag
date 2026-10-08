@@ -42,8 +42,15 @@ def load_config() -> Dict[str, Any]:
 
 
 def _sha256(path: str) -> str:
+    # Line endings are normalised so a checkout on Windows and one on Linux fingerprint the same.
     with open(path, "rb") as handle:
-        return hashlib.sha256(handle.read()).hexdigest()[:16]
+        return hashlib.sha256(handle.read().replace(b"\r\n", b"\n")).hexdigest()[:16]
+
+
+def status_model() -> str:
+    from embedder import configured_embedding_model
+
+    return configured_embedding_model()
 
 
 def _commit() -> Optional[str]:
@@ -136,9 +143,9 @@ def _preflight_budget(rows: List[Dict[str, Any]], tier: Dict[str, Any], max_cost
         return None
     estimate = len(rows) * float(tier.get("estimated_usd_per_question") or 0.0015)
     print(f"Estimated spend: ${estimate:.4f} for {len(rows)} questions (stop at ${max_cost:.2f}).", file=sys.stderr)
-    import rag_engine
+    from llm import openrouter_remaining_budget
 
-    remaining = rag_engine.openrouter_remaining_budget()
+    remaining = openrouter_remaining_budget()
     if remaining is not None and estimate > remaining:
         return f"estimated ${estimate:.4f} is more than the ${remaining:.4f} left on the OpenRouter key"
     return None
@@ -161,7 +168,9 @@ def cmd_run(args) -> int:
         print("No rows selected.")
         return 2
 
-    # Point the engine at the right data before it is imported.
+    # Point the engine at the right data and embedder before it is imported.
+    if args.embed_backend:
+        os.environ["EMBED_BACKEND"] = args.embed_backend
     temp_dir = None
     if args.suite == "hermetic":
         temp_dir = args.data_dir or corpus_module.fresh_data_dir()
@@ -170,7 +179,9 @@ def cmd_run(args) -> int:
         os.environ["NEEDLE_DATA_DIR"] = args.data_dir
 
     try:
-        import rag_engine
+        import config as engine_config
+        from catalog import index_status
+        from rerank import enable_jev_disk_cache, jev_cache_stats, set_reuse_jev_cache
         from eval import report as report_module
         from eval import runner
 
@@ -192,8 +203,8 @@ def cmd_run(args) -> int:
                 return 2
 
         if args.jev_cache != "off":
-            rag_engine.enable_jev_disk_cache(True)
-            rag_engine.set_reuse_jev_cache(args.jev_cache == "replay")
+            enable_jev_disk_cache(True)
+            set_reuse_jev_cache(args.jev_cache == "replay")
         if tier["generate"] or tier["rerank_mode"] != "fused_only":
             blocked = _preflight_budget(rows, tier, args.max_cost)
             if blocked:
@@ -221,6 +232,7 @@ def cmd_run(args) -> int:
             with open(baseline_path, encoding="utf-8") as handle:
                 baseline = json.load(handle)
         fingerprint = {
+            "embedding": status_model(),
             "dataset_sha256": _sha256(dataset_path),
             "corpus": corpus_module.corpus_fingerprint() if args.suite == "hermetic" else None,
             "selection": {"ids": args.ids, "tags": args.tags, "limit": args.limit},
@@ -240,7 +252,7 @@ def cmd_run(args) -> int:
             gate["passed"] = False
             gate["checks"].append({"check": "run completed", "value": len(records), "passed": False})
 
-        status = rag_engine.index_status()
+        status = index_status()
         report = {
             "suite": args.suite,
             "tier": args.tier,
@@ -255,12 +267,12 @@ def cmd_run(args) -> int:
             "config": {"k": config["k"], "pipeline": config["pipeline"], "tier": tier},
             "models": {
                 "embedding": status["embedding_model"],
-                "jev": f"{status['jev_provider']}:{status['jev_model']}" if tier["rerank_mode"] != "fused_only" else None,
-                "writer": rag_engine.OPENROUTER_MODEL if tier["generate"] else None,
-                "checker": rag_engine.CHECKER_MODEL if tier["generate"] else None,
+                "jev": f"openrouter:{status['jev_model']}" if tier["rerank_mode"] != "fused_only" else None,
+                "writer": engine_config.OPENROUTER_MODEL if tier["generate"] else None,
+                "checker": engine_config.CHECKER_MODEL if tier["generate"] else None,
                 "judge": (records and next((r["judge"].get("model") for r in records if r.get("judge")), None)),
             },
-            "jev_cache": {"mode": args.jev_cache, **rag_engine.jev_cache_stats()},
+            "jev_cache": {"mode": args.jev_cache, **jev_cache_stats()},
             "metrics": summary,
             "gate": gate,
             "baseline": os.path.relpath(baseline_path, EVAL_DIR) if baseline else None,
@@ -384,6 +396,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     run.add_argument("--no-gate", action="store_true", help="report gate failures but exit 0")
     run.add_argument("--data-dir", help="data dir to evaluate (hermetic: build here and keep it)")
     run.add_argument("--keep-data", action="store_true", help="keep the throwaway hermetic data dir")
+    run.add_argument("--embed-backend", choices=("minilm", "openrouter", "tei"),
+                     help="embed with this backend (default: EMBED_BACKEND or minilm); hermetic suite only")
     run.add_argument("--out-dir", help="where to write reports (default eval/reports)")
     run.set_defaults(func=cmd_run)
 

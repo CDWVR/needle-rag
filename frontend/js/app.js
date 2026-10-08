@@ -228,7 +228,7 @@ function renderThreads() {
     const sourced = Number(thread.source_threads) || 0;
     const meta = [when(thread.updated_at).toUpperCase(), sourced ? `${sourced} SOURCED` : ""].filter(Boolean).join(" · ");
     return `
-      <button type="button" class="thread ${thread.id === state.conversationId ? "active" : ""}" data-id="${thread.id}">
+      <button type="button" class="thread ${thread.id === state.conversationId ? "active" : ""}" data-id="${escapeHtml(thread.id)}">
         <strong>${escapeHtml(thread.title)}</strong>
         <small>${escapeHtml(meta)}</small>
       </button>`;
@@ -251,7 +251,7 @@ function renderCorpus() {
     ? indexed
         .map(
           (doc) => `
-        <button type="button" class="doc-stat" data-doc="${doc.id}" style="width:100%;background:transparent;text-align:left">
+        <button type="button" class="doc-stat" data-doc="${escapeHtml(doc.id)}" style="width:100%;background:transparent;text-align:left">
           <div class="doc-icon">${fileKind(doc.name)}</div>
           <div class="doc-meta"><strong>${escapeHtml(doc.name)}</strong><span>${doc.chunk_count} CHUNKS · ${escapeHtml(String(doc.status || "").toUpperCase())}</span></div>
           <i class="doc-ok"></i>
@@ -630,14 +630,10 @@ async function sendQuestion(query) {
   root.innerHTML = `<p class="status-line">Searching the index…</p><h2 class="query-title">${escapeHtml(activeConversationTitle())}</h2><p class="user-prompt"><span class="section-eyebrow">You asked</span>${escapeHtml(query)}</p>`;
   const prior = state.messages.slice();
   try {
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query,
-        document_id: state.scopeId || null,
-        conversation_id: state.conversationId,
-      }),
+    const response = await api.chat({
+      query,
+      document_id: state.scopeId || null,
+      conversation_id: state.conversationId,
     });
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
@@ -700,7 +696,6 @@ async function renderKnowledge() {
       <header class="page-header">
         <div><div class="section-eyebrow">Knowledge operations</div><h1>Knowledge base</h1><p>Curate the source material that can be searched, cited, and used for grounded answers.</p></div>
         <div class="page-actions">
-          <button class="btn" id="connectSource" type="button">Connect source</button>
           <button class="btn primary" id="uploadButton" type="button">Upload files</button>
         </div>
       </header>
@@ -729,7 +724,6 @@ async function renderKnowledge() {
       </section>
     </div>`;
   listen($("#uploadButton"), "click", () => chooseFile("upload"));
-  listen($("#connectSource"), "click", () => showConnect());
   listen($("#documentSearch"), "input", (event) => {
     state.docQuery = event.target.value;
     paintDocuments();
@@ -917,7 +911,7 @@ async function togglePolicy(button, id, key, onText, offText) {
 }
 
 async function openOriginal(doc) {
-  const response = await fetch(`/api/documents/${doc.id}/file`);
+  const response = await api.documentFile(doc.id);
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(errorMessage(data, "The original file is not stored for this document."));
@@ -926,7 +920,8 @@ async function openOriginal(doc) {
   const url = URL.createObjectURL(blob);
   const header = response.headers.get("Content-Disposition") || "";
   const named = /filename="?([^";]+)"?/i.exec(header);
-  const opened = window.open(url, "_blank", "noopener");
+  const isPdf = (blob.type || "").startsWith("application/pdf");
+  const opened = isPdf ? window.open(url, "_blank", "noopener") : null;
   if (!opened) {
     const link = document.createElement("a");
     link.href = url;
@@ -994,7 +989,7 @@ async function renderPipeline() {
               node("Refine", "Jev reranker", `${escapeHtml(jevState)} · keep ≥ ${Number(index.jev_relevance_threshold ?? 0.2).toFixed(2)}`),
               node("Answer", "Ground + validate", latestEval?.metrics?.answers ? `${percent(latestEval.metrics.answers.answer_rate)} eval answer rate` : escapeHtml(index.answer_model || "OpenRouter")),
             ])}
-            <div class="pipeline-legend"><span><i></i> Production active</span><span>● Runtime component</span><span>Jev via ${escapeHtml(index.jev_provider || "openrouter")} · ${escapeHtml(index.jev_model || "")}</span></div>
+            <div class="pipeline-legend"><span><i></i> Production active</span><span>● Runtime component</span><span>Jev via OpenRouter · ${escapeHtml(index.jev_model || "")}</span></div>
           </div>
         </section>
         <div class="stack">
@@ -1189,7 +1184,7 @@ async function renderAnalytics() {
 }
 
 async function exportReport() {
-  const response = await fetch(`/api/analytics/export?days=${state.analyticsDays}`);
+  const response = await api.analyticsExport(state.analyticsDays);
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(errorMessage(data, "Export failed."));
@@ -1209,8 +1204,6 @@ const settingFields = [
   ["setName", "workspace_name"],
   ["setProfile", "profile_name"],
   ["setCollection", "default_collection"],
-  ["setRegion", "region"],
-  ["setTimezone", "timezone"],
   ["setChunking", "chunking"],
   ["setLength", "answer_length"],
   ["setCiteStyle", "citation_style"],
@@ -1258,8 +1251,6 @@ function settingsPayload() {
     workspace_name: String(form.workspace_name ?? "").trim(),
     profile_name: String(form.profile_name ?? "").trim(),
     default_collection: String(form.default_collection ?? "").trim() || "General",
-    region: form.region || current.region || "European Union",
-    timezone: form.timezone || current.timezone || "UTC",
     show_traces: Boolean(form.show_traces),
     allow_downloads: Boolean(form.allow_downloads),
     answer_length: form.answer_length || current.answer_length || "Balanced",
@@ -1276,7 +1267,7 @@ function settingsPayload() {
 }
 
 async function renderSettings() {
-  const [settings, members, integrations] = await Promise.all([api.settings(), api.members(), api.integrations()]);
+  const [settings, session] = await Promise.all([api.settings(), api.session()]);
   state.settings = settings;
   const previous = state.draftDirty ? state.form : null;
   state.form = { ...settings, ...(previous || {}) };
@@ -1289,8 +1280,7 @@ async function renderSettings() {
           <button type="button" class="active" data-settings="general">General</button>
           <button type="button" data-settings="answers">Answer behavior</button>
           <button type="button" data-settings="retrieval">Retrieval</button>
-          <button type="button" data-settings="members">Members &amp; access</button>
-          <button type="button" data-settings="integrations">Integrations</button>
+          <button type="button" data-settings="access">Access</button>
           <button type="button" data-settings="billing">Data</button>
         </nav>
         <div>
@@ -1300,11 +1290,9 @@ async function renderSettings() {
               <div class="field"><label for="setName">Workspace name</label><input id="setName" /></div>
               <div class="field"><label for="setProfile">Your name</label><input id="setProfile" /></div>
               <div class="field"><label for="setCollection">Default collection</label><select id="setCollection">${optionList(["General", "Product", "Security", "Research"], state.form.default_collection)}</select></div>
-              <div class="field"><label for="setRegion">Region</label><select id="setRegion">${optionList(["European Union", "United States", "Asia Pacific"], state.form.region)}</select></div>
-              <div class="field"><label for="setTimezone">Timezone</label><select id="setTimezone">${optionList(["UTC", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Asia/Kolkata", "Asia/Tokyo"], state.form.timezone)}</select></div>
             </div></div>
             <div class="form-block"><h3>Workspace preferences</h3><p>Shared behavior for everyone in this workspace.</p>
-            <div class="switch-row"><div><strong>Show retrieval traces</strong><p>Let members inspect retrieval and reranking steps</p></div>${switches("show_traces")}</div>
+            <div class="switch-row"><div><strong>Show retrieval traces</strong><p>Show the retrieval and reranking trace next to each answer</p></div>${switches("show_traces")}</div>
             <div class="switch-row"><div><strong>Allow source downloads</strong><p>Open original files from document detail</p></div>${switches("allow_downloads")}</div>
             </div>
           </section>
@@ -1332,19 +1320,9 @@ async function renderSettings() {
             <div class="switch-row"><div><strong>Heading-aware embeddings</strong><p>Next index refresh embeds the section title with each passage</p></div>${switches("contextual_embeddings")}</div>
             </div>
           </section>
-          <section class="panel settings-section" data-section="members">
-            <div class="panel-head"><div><h2>Members &amp; access</h2><p>${(members.members || []).length} member${(members.members || []).length === 1 ? "" : "s"} · local workspace directory</p></div><button class="btn small primary" id="inviteMember" type="button">Invite member</button></div>
-            <div class="table-scroll"><table class="data-table"><thead><tr><th>Member</th><th>Role</th><th>Added</th></tr></thead><tbody>
-              ${(members.members || []).map((member) => `<tr><td><strong>${escapeHtml(member.name)}</strong><br><small>${escapeHtml(member.email)}</small></td><td>${escapeHtml(member.role)}</td><td>${member.created_at ? escapeHtml(when(member.created_at)) : "Workspace owner"}</td></tr>`).join("") || `<tr><td colspan="3"><p class="empty-note">No members yet.</p></td></tr>`}
-            </tbody></table></div>
-          </section>
-          <section class="panel settings-section" data-section="integrations">
-            <div class="panel-head"><div><h2>Integrations</h2><p>Only file upload is connected on this server</p></div></div>
-            <div class="form-block">${(integrations.integrations || [])
-              .map(
-                (item) => `<div class="switch-row"><div><strong>${escapeHtml(item.name)}</strong><p>${escapeHtml(item.detail)}</p></div><button class="btn small" type="button" data-integration="${escapeHtml(item.id)}" data-connected="${item.connected ? "true" : "false"}" data-detail="${escapeHtml(item.detail || "")}">${item.connected ? "Use" : "Connect"}</button></div>`
-              )
-              .join("")}</div>
+          <section class="panel settings-section" data-section="access">
+            <div class="panel-head"><div><h2>Access</h2><p>${session.auth_disabled ? "Sign-in is turned off on this server" : "Signed in with the workspace access token"}</p></div><button class="btn small" id="signOut" type="button" ${session.auth_disabled ? "disabled" : ""}>Sign out</button></div>
+            <div class="form-block"><h3>How access works</h3><p>Everyone who opens this workspace signs in with the same access token, set as <code>NEEDLE_ACCESS_TOKEN</code> on the server (or generated on first start and stored in the data folder). Sessions last 12 hours. To revoke every session, change the token and <code>NEEDLE_SESSION_SECRET</code>, then restart.</p></div>
           </section>
           <section class="panel settings-section" data-section="billing">
             <div class="panel-head"><div><h2>Local data</h2><p>This workspace runs on this machine</p></div></div>
@@ -1381,17 +1359,8 @@ async function renderSettings() {
     });
   });
   listen($("#saveSettings"), "click", () => saveSettings());
-  listen($("#inviteMember"), "click", () => inviteDialog());
   listen($("#resetWorkspace"), "click", () => resetDialog());
-  page.querySelectorAll("[data-integration]").forEach((button) => {
-    listen(button, "click", () => {
-      if (button.dataset.integration === "files" && button.dataset.connected === "true") {
-        chooseFile("upload");
-        return;
-      }
-      notify(button.dataset.detail || "Not configured on this server.");
-    });
-  });
+  listen($("#signOut"), "click", () => signOut());
 }
 
 async function saveSettings() {
@@ -1405,8 +1374,9 @@ async function saveSettings() {
   await refreshShell();
 }
 
-function openModal(title, body, actions, { wide = false } = {}) {
+function openModal(title, body, actions, { wide = false, locked = false } = {}) {
   $("#modal").querySelector(".modal-card").classList.toggle("wide", wide);
+  $("#modal").dataset.locked = locked ? "true" : "";
   $("#modalTitle").textContent = title;
   $("#modalBody").innerHTML = body;
   const bar = $("#modalActions");
@@ -1425,48 +1395,55 @@ function openModal(title, body, actions, { wide = false } = {}) {
   $("#modalBody").querySelector("input")?.focus();
 }
 
-function closeModal() {
+function closeModal(force = false) {
+  if ($("#modal").dataset.locked === "true" && !force) return;
+  $("#modal").dataset.locked = "";
   $("#modal").hidden = true;
   $("#modalBody").innerHTML = "";
   $("#modalActions").innerHTML = "";
 }
 
-function showConnect() {
-  openModal(
-    "Connect a source",
-    `<p>File upload is the connected source on this server. Google Drive, Notion, and Slack are not configured.</p>`,
-    [
-      { label: "Cancel", onClick: closeModal },
-      {
-        label: "Upload a file",
-        primary: true,
-        onClick: () => {
-          closeModal();
-          chooseFile("upload");
-        },
-      },
-    ]
-  );
-}
+let signInOpen = false;
 
-function inviteDialog() {
+function showSignIn(message = "") {
+  if (signInOpen) return;
+  signInOpen = true;
   openModal(
-    "Invite a member",
-    `<div class="field" style="margin-bottom:8px"><label for="inviteName">Name</label><input id="inviteName" /></div><div class="field"><label for="inviteEmail">Email</label><input id="inviteEmail" type="email" /></div>`,
+    "Sign in to Needle",
+    `<p>Enter the workspace access token. It is set as <code>NEEDLE_ACCESS_TOKEN</code> on the server, or printed in the server console on first start.</p>${message ? `<p class="form-error">${escapeHtml(message)}</p>` : ""}<div class="field"><label for="accessToken">Access token</label><input id="accessToken" type="password" autocomplete="current-password" /></div>`,
     [
-      { label: "Cancel", onClick: closeModal },
       {
-        label: "Invite",
+        label: "Sign in",
         primary: true,
         onClick: async () => {
-          await api.invite({ name: $("#inviteName").value.trim(), email: $("#inviteEmail").value.trim(), role: "Member" });
-          closeModal();
-          notify("Member added");
-          await renderSettings();
+          const token = $("#accessToken").value.trim();
+          if (!token) return;
+          try {
+            await api.login(token);
+          } catch (err) {
+            signInOpen = false;
+            closeModal(true);
+            showSignIn(err.message);
+            return;
+          }
+          signInOpen = false;
+          closeModal(true);
+          await boot();
         },
       },
-    ]
+    ],
+    { locked: true }
   );
+  listen($("#accessToken"), "keydown", (event) => {
+    if (event.key === "Enter") $("#modalActions .btn.primary")?.click();
+  });
+}
+
+async function signOut() {
+  await api.logout();
+  state.conversationId = null;
+  state.messages = [];
+  showSignIn();
 }
 
 function confirmDelete(doc) {
@@ -1532,6 +1509,24 @@ function renderContextMenu() {
       menu.hidden = true;
     });
   });
+}
+
+// The server queues an upload and indexes it in the background; follow the job to the end.
+async function waitForIndexing(queued) {
+  if (queued.status === "duplicate") return { id: queued.id, name: queued.name, duplicate: true };
+  notify(`Indexing ${queued.name}…`);
+  await refreshShell();
+  if (state.page === "knowledge") paintDocuments();
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let delay = 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay * 1.5, 5000);
+    const job = await api.job(queued.job_id);
+    if (job.status === "completed") return { id: job.document_id, name: job.filename };
+    if (job.status === "failed") throw new Error(job.error || `${job.filename} could not be indexed.`);
+  }
+  throw new Error(`${queued.name} is still indexing. It will appear in the knowledge base when it finishes.`);
 }
 
 function chooseFile(mode, documentId = null) {
@@ -1665,10 +1660,10 @@ listen($("#fileInput"), "change", async (event) => {
     return;
   }
   state.uploading = true;
-  notify(`Indexing ${file.name}…`);
+  notify(`Uploading ${file.name}…`);
   try {
-    const uploaded = await api.upload(file);
-    let message = `${uploaded.name} indexed`;
+    const uploaded = await waitForIndexing(await api.upload(file));
+    let message = uploaded.duplicate ? `${uploaded.name} is already indexed` : `${uploaded.name} indexed`;
     if (replacing && replacing !== uploaded.id) {
       try {
         await api.deleteDocument(replacing);
@@ -1714,13 +1709,26 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("#threadsToggle").setAttribute("aria-expanded", "false");
+listen($("#avatar"), "click", () =>
+  openModal("Sign out?", "<p>You will need the access token to sign in again.</p>", [
+    { label: "Cancel", onClick: () => closeModal() },
+    { label: "Sign out", danger: true, onClick: async () => { closeModal(); await signOut(); } },
+  ])
+);
+window.addEventListener("needle:auth-required", () => showSignIn("Your session ended. Sign in again."));
 if (/Mac|iPhone|iPad/.test(navigator.platform || "")) $("#searchShortcut").textContent = "⌘K";
 $("#sourceToggle").setAttribute("aria-expanded", "false");
 $("#voiceButton").setAttribute("aria-pressed", "false");
 
-refreshShell()
-  .then(() => {
-    renderConversation();
-    if (location.hash && location.hash !== "#ask") routeFromHash();
-  })
-  .catch((err) => notify(err.message));
+async function boot() {
+  const session = await api.session();
+  if (!session.authenticated) {
+    showSignIn();
+    return;
+  }
+  await refreshShell();
+  renderConversation();
+  if (location.hash && location.hash !== "#ask") routeFromHash();
+}
+
+boot().catch((err) => notify(err.message));

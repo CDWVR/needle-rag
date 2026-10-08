@@ -14,3 +14,4 @@ temp_*
 # Eval run output (baselines in backend/eval/baselines are committed)
 backend/eval/reports/
 backend/eval/datasets/*.candidates.jsonl
+backend/secrets/

@@ -1,6 +1,6 @@
 """Run golden questions through the production pipeline and score each one.
 
-Import this only after NEEDLE_DATA_DIR points at the index to evaluate: it imports the engine.
+Import this only after NEEDLE_DATA_DIR points at the index to evaluate: it imports the engine modules.
 """
 
 from __future__ import annotations
@@ -11,20 +11,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
-import rag_engine
+from catalog import active_collection, document_hash_map, store
+from pipeline import PipelineOptions, answer_question
+from versions import available_documents as indexed_documents
 from eval import metrics as m
 from eval.schema import documents_covered, parent_matches
 
 RANK_DEPTH = 10
 
 
-class BudgetExceeded(RuntimeError):
-    pass
-
-
-def pipeline_options(config: Dict[str, Any], tier: Dict[str, Any]) -> "rag_engine.PipelineOptions":
+def pipeline_options(config: Dict[str, Any], tier: Dict[str, Any]) -> PipelineOptions:
     pipeline = config["pipeline"]
-    return rag_engine.PipelineOptions(
+    return PipelineOptions(
         top_k=int(pipeline["top_k"]),
         similarity_threshold=float(pipeline["similarity_threshold"]),
         rrf_k=int(pipeline["rrf_k"]),
@@ -45,13 +43,13 @@ def pipeline_options(config: Dict[str, Any], tier: Dict[str, Any]) -> "rag_engin
 
 
 def available_documents() -> Dict[str, set]:
-    _collection, active = rag_engine._active_collection()
-    return rag_engine._available_documents(active["collection_name"])
+    _collection, active = active_collection()
+    return indexed_documents(active["collection_name"])
 
 
 def _hash_map() -> Dict[str, str]:
-    _collection, active = rag_engine._active_collection()
-    return rag_engine._document_hash_map(active["collection_name"])
+    _collection, active = active_collection()
+    return document_hash_map(active["collection_name"])
 
 
 def score_row(row: Dict[str, Any], result: Dict[str, Any], *, k: int, generate: bool) -> Dict[str, Any]:
@@ -194,7 +192,7 @@ def run_rows(
         use_history = bool(tier["use_history"]) and bool(row.get("history"))
         question = row["question"] if use_history or not row.get("history") else row.get("standalone_question") or row["question"]
         started = time.perf_counter()
-        result = rag_engine.answer_question(
+        result = answer_question(
             question,
             history=row.get("history") if use_history else None,
             options=options,
@@ -248,7 +246,7 @@ def unreachable_spans(rows: List[Dict[str, Any]]) -> List[str]:
 
     A span split across a chunk boundary can never be matched, so it is a dataset bug.
     """
-    parents = rag_engine.store.conn.execute("SELECT document_name, page_number, parent_text FROM parents").fetchall()
+    parents = store.conn.execute("SELECT document_name, page_number, parent_text FROM parents").fetchall()
     by_doc: Dict[str, List[Dict[str, Any]]] = {}
     for row in parents:
         by_doc.setdefault(row["document_name"], []).append(

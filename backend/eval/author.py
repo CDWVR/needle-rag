@@ -33,9 +33,9 @@ _KINDS = {
 
 
 def _ask(prompt: str) -> Dict[str, Any]:
-    import rag_engine
+    from llm import complete
 
-    raw = rag_engine._guarded_writer(
+    raw = complete(
         [{"role": "user", "content": prompt}],
         temperature=0.3,
         max_tokens=300,
@@ -49,9 +49,10 @@ def _ask(prompt: str) -> Dict[str, Any]:
 
 
 def draft(count: int, seed: int = 7) -> int:
-    import rag_engine
+    from catalog import list_parent_passages
+    from llm import cost_ledger_snapshot
 
-    passages = [p for p in rag_engine.list_parent_passages() if len((p.get("text") or "").strip()) >= 200]
+    passages = [p for p in list_parent_passages() if len((p.get("text") or "").strip()) >= 200]
     if not passages:
         print("No indexed passages to draft from.")
         return 0
@@ -101,7 +102,7 @@ def draft(count: int, seed: int = 7) -> int:
         existing.add(" ".join(question.lower().split()))
         written += 1
     print(f"Drafted {written} candidates into {os.path.relpath(CANDIDATES)} (spend shown under golden_build).")
-    print(f"Spend: {rag_engine.cost_ledger_snapshot()['golden_build']:.4f} USD")
+    print(f"Spend: {cost_ledger_snapshot()['golden_build']:.4f} USD")
     return written
 
 

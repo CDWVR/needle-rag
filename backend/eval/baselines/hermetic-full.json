@@ -1,11 +1,12 @@
 {
   "suite": "hermetic",
   "tier": "full",
-  "recorded_at": "2026-10-07T18:01:59.099838+00:00",
-  "commit": "352ae59f0f649ae1b25af4ea6b8b4bf7cb03da04",
+  "recorded_at": "2026-10-08T18:41:46.395827+00:00",
+  "commit": "98e15b355811ef8c31a401c5e17728a9ce86d87e",
   "fingerprint": {
+    "embedding": "all-MiniLM-L6-v2",
     "dataset_sha256": "5a39c56178c05499",
-    "corpus": "24882c6fd9ca0caa",
+    "corpus": "64a6d0ad8501827d",
     "selection": {
       "ids": null,
       "tags": null,
@@ -27,9 +28,9 @@
       "hit_at_5": 1.0,
       "hit_at_10": 1.0,
       "recall_at_k": 1.0,
-      "ndcg_at_k": 0.9746,
+      "ndcg_at_k": 0.9733,
       "page_hit_at_k": 1.0,
-      "mrr": 0.9688,
+      "mrr": 0.967,
       "n": 96,
       "hit_at_5_ci": {
         "low": 1.0,
@@ -48,18 +49,18 @@
       "factual": {
         "n": 65,
         "hit_at_5": 1.0,
-        "mrr": 0.9692,
-        "answered": 0.9538,
+        "mrr": 0.959,
+        "answered": 0.9846,
         "key_fact_recall": 1.0,
-        "abstained": 0.0462
+        "abstained": 0.0154
       },
       "followup": {
         "n": 9,
         "hit_at_5": 1.0,
-        "mrr": 0.9444,
-        "answered": 1.0,
+        "mrr": 1.0,
+        "answered": 0.8889,
         "key_fact_recall": 1.0,
-        "abstained": 0.0
+        "abstained": 0.1111
       },
       "multihop": {
         "n": 8,
@@ -80,43 +81,43 @@
     },
     "latency_ms": {
       "check": {
-        "p50": 4100.4,
-        "p95": 15633.0,
-        "n": 104
+        "p50": 4368.8,
+        "p95": 18287.8,
+        "n": 105
       },
       "condense": {
         "p50": 0.0,
-        "p95": 2521.4,
+        "p95": 2329.0,
         "n": 117
       },
       "rerank": {
-        "p50": 8462.1,
-        "p95": 16660.1,
+        "p50": 8800.0,
+        "p95": 15797.6,
         "n": 117
       },
       "retrieve": {
-        "p50": 191.6,
-        "p95": 508.0,
+        "p50": 258.7,
+        "p95": 1105.5,
         "n": 117
       },
       "retry": {
-        "p50": 10629.3,
-        "p95": 16041.6,
-        "n": 15
+        "p50": 10336.1,
+        "p95": 16406.0,
+        "n": 14
       },
       "total": {
-        "p50": 15143.3,
-        "p95": 31146.4,
+        "p50": 16760.3,
+        "p95": 30678.2,
         "n": 117
       },
       "write": {
-        "p50": 2459.8,
-        "p95": 4008.8,
-        "n": 104
+        "p50": 2694.4,
+        "p95": 4857.7,
+        "n": 105
       }
     },
     "cost": {
-      "total_usd": 0.045635,
+      "total_usd": 0.045294,
       "per_question_usd": 0.0004
     },
     "infra": {
@@ -125,42 +126,41 @@
     },
     "pipeline_errors": 0,
     "answers": {
-      "answer_rate": 0.9892,
+      "answer_rate": 0.9677,
       "answer_rate_ci": {
-        "low": 0.9677,
+        "low": 0.9247,
         "high": 1.0
       },
-      "false_refusal_rate": 0.0108,
-      "key_fact_recall": 0.9946,
-      "fully_correct_rate": 0.9891,
+      "false_refusal_rate": 0.0323,
+      "key_fact_recall": 0.9944,
+      "fully_correct_rate": 0.9889,
       "citation_validity": 1.0,
-      "evidence_citation_rate": 0.9783,
-      "partial_rate": 0.0435,
+      "evidence_citation_rate": 0.9889,
+      "partial_rate": 0.0333,
       "released_unanswerable": 1,
       "declined_rate": 0.0855,
       "n_answerable": 93
     },
     "abstention": {
-      "precision": 0.8333,
+      "precision": 0.8696,
       "recall": 0.9524,
-      "f1": 0.8889,
+      "f1": 0.9091,
       "tp": 20,
-      "fp": 4,
+      "fp": 3,
       "fn": 1,
-      "tn": 92,
+      "tn": 93,
       "recall_near_miss": 0.9333,
       "recall_off_topic": 1.0
     },
     "safety": {
       "injection_rows": 3,
-      "injection_released": 2,
+      "injection_released": 3,
       "injection_leaks": 0
     },
     "reject_categories": {
-      "accepted": 103,
+      "accepted": 104,
       "retrieval_abstain": 12,
-      "injection_scan": 1,
-      "deterministic:quote_span": 1
+      "checker_unparseable": 1
     }
   },
   "per_question": {
@@ -548,7 +548,7 @@
     },
     "travel25-perdiem": {
       "hit_at_5": 1.0,
-      "rr": 0.5,
+      "rr": 0.3333333333333333,
       "recall_at_k": 1.0,
       "answered": 1.0,
       "key_fact_recall": 1.0,
@@ -556,7 +556,7 @@
     },
     "travel-current-report": {
       "hit_at_5": 1.0,
-      "rr": 1.0,
+      "rr": 0.5,
       "recall_at_k": 1.0,
       "answered": 1.0,
       "key_fact_recall": 1.0,
@@ -566,9 +566,7 @@
       "hit_at_5": 1.0,
       "rr": 1.0,
       "recall_at_k": 1.0,
-      "answered": 1.0,
-      "key_fact_recall": 1.0,
-      "cites_evidence": 1.0
+      "answered": 0.0
     },
     "travel-late-booking": {
       "hit_at_5": 1.0,
@@ -852,11 +850,9 @@
     },
     "fu-hotel": {
       "hit_at_5": 1.0,
-      "rr": 0.5,
+      "rr": 1.0,
       "recall_at_k": 1.0,
-      "answered": 1.0,
-      "key_fact_recall": 1.0,
-      "cites_evidence": 0.0
+      "answered": 0.0
     },
     "fu-start-carts": {
       "hit_at_5": 1.0,
@@ -911,19 +907,25 @@
       "hit_at_5": 1.0,
       "rr": 1.0,
       "recall_at_k": 1.0,
-      "answered": 0.0
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
     },
     "vendor-contract": {
       "hit_at_5": 1.0,
       "rr": 1.0,
       "recall_at_k": 1.0,
-      "answered": 0.0
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
     },
     "vendor-lead-time": {
       "hit_at_5": 1.0,
       "rr": 1.0,
       "recall_at_k": 1.0,
-      "answered": 0.0
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
     },
     "na-ramp-payload": {},
     "na-tern4-price": {},

@@ -267,11 +267,18 @@ def soft_rrf_ranks(
 
 
 _INJECTION = (
-    re.compile(r"ignore (all |any |the )?(previous|prior|above) instructions", re.I),
-    re.compile(r"disregard (the )?(system|previous|prior)", re.I),
-    re.compile(r"you are now", re.I),
-    re.compile(r"<\s*/?\s*system\s*>", re.I),
+    re.compile(r"\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+|the\s+|your\s+)?(?:previous|prior|above|earlier|preceding)\s+"
+               r"(?:instructions?|directions?|rules|prompts?|messages?)", re.I),
+    re.compile(r"\bdisregard\s+(?:the\s+)?(?:system|previous|prior)\b", re.I),
+    re.compile(r"\byou\s+are\s+now\b", re.I),
+    re.compile(r"\b(?:new|updated|revised)\s+(?:system\s+)?instructions?\s*:", re.I),
+    re.compile(r"\b(?:reveal|print|repeat|show)\s+(?:me\s+)?(?:your|the)\s+(?:system\s+)?prompt\b", re.I),
+    re.compile(r"<\s*/?\s*(?:system|assistant|instructions?)\s*>", re.I),
+    re.compile(r"\[/?(?:INST|SYS)\]|<\|im_(?:start|end)\|>", re.I),
 )
+# A passage that loses this much of itself to stripping is mostly instructions; drop it instead.
+_MIN_KEPT_SHARE = 0.4
+_MIN_KEPT_CHARS = 80
 
 
 def injection_match(text: str) -> Optional[str]:
@@ -282,8 +289,36 @@ def injection_match(text: str) -> Optional[str]:
     return None
 
 
-def passage_looks_like_instructions(text: str) -> bool:
-    return injection_match(text) is not None
+def strip_injections(text: str) -> Tuple[Optional[str], List[str]]:
+    """Remove the sentences (or lines) that try to instruct the model, keep the rest.
+
+    Returns (clean text or None when too little survives, matched phrases). Removing only the
+    offending sentences keeps the facts in a document that quotes a hostile email, instead of
+    discarding the whole passage.
+    """
+    source = text or ""
+    if injection_match(source) is None:
+        return source, []
+    pieces = re.split(r"(?<=[.!?])\s+|\n+", source)
+    kept, matches = [], []
+    for piece in pieces:
+        found = injection_match(piece)
+        if found:
+            matches.append(found)
+        elif piece.strip():
+            kept.append(piece.strip())
+    clean = "\n".join(kept)
+    if len(clean) < _MIN_KEPT_CHARS or len(clean) < _MIN_KEPT_SHARE * len(source.strip()):
+        return None, matches
+    return clean, matches
+
+
+_PROMPT_TAG = re.compile(r"<\s*/?\s*untrusted-passage[^>]*>", re.I)
+
+
+def neutralize_prompt_tags(text: str) -> str:
+    """A passage must not be able to close the <untrusted-passage> wrapper it is placed in."""
+    return _PROMPT_TAG.sub("[tag removed]", text or "")
 
 
 _REFUSAL = re.compile(

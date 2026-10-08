@@ -193,12 +193,6 @@ def first_match_rank(parents: Sequence[Dict[str, Any]], expected: Sequence[Dict[
     return None
 
 
-def expected_found(parents: Sequence[Dict[str, Any]], expected: Sequence[Dict[str, Any]], k: int) -> List[bool]:
-    """For each expected passage, whether it appears in the top-k parents (multi-hop recall)."""
-    top = list(parents)[: max(0, k)]
-    return [any(parent_matches(parent, item) for parent in top) for item in expected]
-
-
 def documents_covered(row: Dict[str, Any], available: Dict[str, set]) -> bool:
     """True when every expected document is present in the index being evaluated.
 

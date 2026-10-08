@@ -1,11 +1,12 @@
 {
   "suite": "hermetic",
   "tier": "offline",
-  "recorded_at": "2026-10-07T17:52:46.002280+00:00",
-  "commit": "352ae59f0f649ae1b25af4ea6b8b4bf7cb03da04",
+  "recorded_at": "2026-10-08T18:13:31.228625+00:00",
+  "commit": "98e15b355811ef8c31a401c5e17728a9ce86d87e",
   "fingerprint": {
+    "embedding": "all-MiniLM-L6-v2",
     "dataset_sha256": "5a39c56178c05499",
-    "corpus": "24882c6fd9ca0caa",
+    "corpus": "64a6d0ad8501827d",
     "selection": {
       "ids": null,
       "tags": null,
@@ -75,13 +76,13 @@
         "n": 117
       },
       "retrieve": {
-        "p50": 383.4,
-        "p95": 591.4,
+        "p50": 396.5,
+        "p95": 620.8,
         "n": 117
       },
       "total": {
-        "p50": 782.1,
-        "p95": 965.1,
+        "p50": 813.9,
+        "p95": 1027.4,
         "n": 117
       }
     },

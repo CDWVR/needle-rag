@@ -23,7 +23,7 @@ def _render_pdf(source: str) -> bytes:
         import fitz
 
     with open(source, encoding="utf-8") as handle:
-        text = handle.read()
+        text = handle.read().replace("\r\n", "\n")
     pages = [page.strip("\n") for page in text.split(f"\n{PAGE_BREAK}\n")]
     document = fitz.open()
     for page_text in pages:
@@ -46,7 +46,8 @@ def corpus_files() -> List[Tuple[str, bytes]]:
             files.append((name[: -len(".txt")], _render_pdf(path)))
         else:
             with open(path, "rb") as handle:
-                files.append((name, handle.read()))
+                # Same bytes on every platform, so chunk boundaries (and metrics) match CI.
+                files.append((name, handle.read().replace(b"\r\n", b"\n")))
     return files
 
 
@@ -54,7 +55,7 @@ def corpus_fingerprint() -> str:
     digest = hashlib.sha256()
     for name, payload in corpus_files():
         digest.update(name.encode())
-        digest.update(hashlib.sha256(_stable(name, payload)).digest())
+        digest.update(hashlib.sha256(_stable(name, payload).replace(b"\r\n", b"\n")).digest())
     return digest.hexdigest()[:16]
 
 
@@ -76,14 +77,15 @@ def build_index(data_dir: str) -> Dict[str, Dict]:
 
     if os.path.abspath(DATA_DIR) != os.path.abspath(data_dir):
         raise RuntimeError("Set NEEDLE_DATA_DIR before importing the engine; refusing to touch another index.")
-    import rag_engine
+    from catalog import get_all_documents
+    from ingest import process_document
 
-    if rag_engine.get_all_documents():
+    if get_all_documents():
         raise RuntimeError(f"{data_dir} already has documents; the hermetic suite needs an empty data dir.")
     built = {}
     for name, payload in corpus_files():
         content_type = "application/pdf" if name.endswith(".pdf") else "text/plain"
-        info = rag_engine.process_document(payload, name, content_type, content_hash=hashlib.sha256(payload).hexdigest())
+        info = process_document(payload, name, content_type, content_hash=hashlib.sha256(payload).hexdigest())
         built[name] = {"document_id": info.id, "chunks": info.num_chunks, "pages": info.num_pages}
     return built
 

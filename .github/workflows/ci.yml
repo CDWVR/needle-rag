@@ -4,24 +4,29 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
-    # Pure logic, schema, and metric tests plus a dataset lint. No dependencies beyond the stdlib.
+    # Pure logic, schema, and metric tests, lint, and a dataset check. Standard library only.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Lint
+        run: pip install pyflakes==3.4.0 && python -m pyflakes backend
       - name: Unit tests
-        run: python backend/test_pipeline_units.py
+        run: python backend/tests/test_units.py
       - name: Golden datasets
         working-directory: backend
         run: python -m eval validate
 
-  eval-offline:
-    # The hermetic suite through the real ingestion and retrieval code: free, deterministic,
-    # and gated against backend/eval/baselines/hermetic-offline.json.
+  integration:
+    # API security tests and the hermetic eval through the real ingestion and retrieval code:
+    # free, deterministic, and gated against backend/eval/baselines/hermetic-offline.json.
     runs-on: ubuntu-latest
     needs: unit
     steps:
@@ -37,7 +42,17 @@ jobs:
           path: ~/.cache/chroma
           key: chroma-onnx-minilm-v1
       - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+        run: pip install -r backend/requirements.txt pip-audit==2.9.0
+      - name: Dependency audit
+        # The ignored chromadb advisories affect Chroma's HTTP server and its auth providers.
+        # Needle embeds Chroma in-process and never runs that server; see SECURITY.md.
+        run: >
+          pip-audit -r backend/requirements.txt
+          --ignore-vuln PYSEC-2026-311 --ignore-vuln PYSEC-2026-3813
+          --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815
+      - name: API security tests
+        working-directory: backend
+        run: python -m unittest tests.test_api
       - name: Offline eval (retrieval gate)
         working-directory: backend
         env:

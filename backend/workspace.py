@@ -12,8 +12,6 @@ DEFAULTS = {
     "workspace_name": "Needle",
     "profile_name": "Operator",
     "default_collection": "General",
-    "region": "European Union",
-    "timezone": "UTC",
     "show_traces": "true",
     "allow_downloads": "true",
     "answer_length": "Balanced",
@@ -83,13 +81,6 @@ class WorkspaceStore:
                 detail TEXT NOT NULL,
                 status TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS members (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                email TEXT NOT NULL UNIQUE,
-                role TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
             CREATE TABLE IF NOT EXISTS document_policy (
                 document_id TEXT PRIMARY KEY,
                 collection TEXT NOT NULL,
@@ -131,6 +122,9 @@ class WorkspaceStore:
         )
         for key, value in DEFAULTS.items():
             self.conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        # Retired features: members, region, and timezone did nothing server-side.
+        self.conn.execute("DELETE FROM settings WHERE key IN ('region', 'timezone')")
+        self.conn.execute("DROP TABLE IF EXISTS members")
         self.conn.execute(
             "UPDATE jobs SET status = 'failed', error = 'The server restarted before this upload finished.', updated_at = ? WHERE status IN ('queued', 'processing')",
             (_now(),),
@@ -150,8 +144,6 @@ class WorkspaceStore:
             "workspace_name": raw.get("workspace_name", DEFAULTS["workspace_name"]),
             "profile_name": raw.get("profile_name", DEFAULTS["profile_name"]),
             "default_collection": raw.get("default_collection", DEFAULTS["default_collection"]),
-            "region": raw.get("region", DEFAULTS["region"]),
-            "timezone": raw.get("timezone", DEFAULTS["timezone"]),
             "show_traces": raw.get("show_traces", "true") == "true",
             "allow_downloads": raw.get("allow_downloads", "true") == "true",
             "answer_length": raw.get("answer_length", "Balanced"),
@@ -172,8 +164,6 @@ class WorkspaceStore:
             "workspace_name": str(payload.get("workspace_name", current["workspace_name"])).strip() or current["workspace_name"],
             "profile_name": str(payload.get("profile_name", current["profile_name"])).strip() or current["profile_name"],
             "default_collection": str(payload.get("default_collection", current["default_collection"])).strip() or "General",
-            "region": str(payload.get("region", current["region"])),
-            "timezone": str(payload.get("timezone", current["timezone"])),
             "show_traces": "true" if payload.get("show_traces", current["show_traces"]) else "false",
             "allow_downloads": "true" if payload.get("allow_downloads", current["allow_downloads"]) else "false",
             "answer_length": str(payload.get("answer_length", current["answer_length"])),
@@ -228,6 +218,11 @@ class WorkspaceStore:
             )
             self.conn.commit()
             return new_id
+
+    def conversation_exists(self, conversation_id: str) -> bool:
+        with self._lock:
+            row = self.conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        return row is not None
 
     def create_conversation(self) -> Dict[str, Any]:
         now = _now()
@@ -607,34 +602,6 @@ class WorkspaceStore:
             self.conn.execute("DELETE FROM document_policy WHERE document_id = ?", (document_id,))
             self.conn.commit()
 
-    def list_members(self) -> List[Dict[str, Any]]:
-        settings = self.settings()
-        with self._lock:
-            rows = self.conn.execute("SELECT * FROM members ORDER BY created_at ASC").fetchall()
-        members = [
-            {
-                "id": "owner",
-                "name": settings["profile_name"],
-                "email": "local-operator",
-                "role": "Owner",
-                "created_at": None,
-            }
-        ]
-        members.extend(dict(row) for row in rows)
-        return members
-
-    def invite_member(self, name: str, email: str, role: str) -> Dict[str, Any]:
-        member_id = str(uuid.uuid4())
-        now = _now()
-        role = role if role in {"Admin", "Member"} else "Member"
-        with self._lock:
-            self.conn.execute(
-                "INSERT INTO members (id, name, email, role, created_at) VALUES (?, ?, ?, ?, ?)",
-                (member_id, name.strip(), email.strip().lower(), role, now),
-            )
-            self.conn.commit()
-        return {"id": member_id, "name": name.strip(), "email": email.strip().lower(), "role": role, "created_at": now}
-
     def reset(self) -> None:
         with self._lock:
             for table in (
@@ -643,7 +610,6 @@ class WorkspaceStore:
                 "feedback",
                 "events",
                 "runs",
-                "members",
                 "document_policy",
                 "jobs",
                 "eval_candidates",

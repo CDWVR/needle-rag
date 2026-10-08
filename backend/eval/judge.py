@@ -10,10 +10,11 @@ from __future__ import annotations
 import os
 from typing import Any, Dict
 
-import rag_engine
-from pipeline_logic import extract_json_object
+from config import CHECKER_MAX_TOKENS, CHECKER_MODEL
+from llm import complete
+from pipeline_logic import NeedleError, extract_json_object
 
-JUDGE_MODEL = os.getenv("EVAL_JUDGE_MODEL", "").strip() or rag_engine.CHECKER_MODEL
+JUDGE_MODEL = os.getenv("EVAL_JUDGE_MODEL", "").strip() or CHECKER_MODEL
 _SCORES = {"correct": 1.0, "partial": 0.5, "incorrect": 0.0}
 
 
@@ -30,15 +31,15 @@ def judge(row: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
         f"QUESTION: {row.get('question')}\nREFERENCE: {reference}\nKEY FACTS: {facts}\nANSWER: {record.get('answer')}"
     )
     try:
-        raw, usage = rag_engine._guarded_writer(
+        raw, usage = complete(
             [{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=120,
+            max_tokens=CHECKER_MAX_TOKENS,  # reasoning models need room before the verdict
             model=JUDGE_MODEL,
             return_usage=True,
             cost_purpose="other",
         )
-    except rag_engine.NeedleError as exc:
+    except NeedleError as exc:
         return {"score": None, "verdict": "error", "reason": str(exc), "cost_usd": 0.0}
     parsed = extract_json_object(raw) or {}
     verdict = str(parsed.get("verdict") or "").strip().lower()

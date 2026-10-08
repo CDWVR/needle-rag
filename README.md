@@ -69,8 +69,8 @@
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| **Backend** | FastAPI | Async HTTP server with Background Tasks |
-| **Error Handling** | Exception Middleware | Graceful rejection of corrupted/encrypted files |
+| **Backend** | FastAPI | HTTP API with a background ingestion queue |
+| **Security** | Token sign-in, signed sessions, CSP | See [SECURITY.md](SECURITY.md) |
 | **LLM Synthesis** | OpenRouter (`deepseek/deepseek-v4.1-flash` writer, `deepseek/deepseek-v4-flash` checker) | Cited draft and the grounding check |
 | **Reranker** | Jev `typesafe/jev-1.13` via OpenRouter | Keeps only passages that are useful evidence |
 | **Local Embeddings** | `all-MiniLM-L6-v2` | Open-source, CPU-optimized semantic vectors |
@@ -92,13 +92,32 @@ Text is split into **2,000-character parent chunks**, then into **400-character 
 ### 3. Retrieval, Jev, and the answer check
 The question is tokenized and embedded with the same `all-MiniLM-L6-v2` model recorded on the active index. Search refuses to run when that version is incompatible. Vector hits below cosine similarity `0.30` are dropped. Keyword matches can still be offered to Jev, which then keeps passages at relevance `0.20` or higher. The top parents are assembled with citations. An OpenRouter chat model writes a draft, and a second pass releases it only when it is grounded, safe, and relevant. Otherwise the user gets a no-answer fallback and no citations. Jev itself is called through OpenRouter at `https://openrouter.ai/api/v1/systemone`, so one `OPENROUTER_API_KEY` covers reranking and answers.
 
-Chat and the eval run the same code path (`run_pipeline` in `backend/rag_engine.py`), so evaluation measures what users get.
+Chat and the eval run the same code path (`run_pipeline` in `backend/pipeline.py`), so evaluation measures what users get.
 
 Uploads and deletes write the active index. `POST /api/index/refresh` rebuilds a new collection and publishes it only after the copied count matches and recall@5 on your workspace golden questions has not dropped by more than 0.10 (fused ranking, so the check costs nothing). If fewer than 30 golden questions cover your documents, the UI offers to publish without that comparison. Deletes are applied to every non-failed version in the registry.
 
 ### Jev configuration
 
-Jev runs through OpenRouter by default, so `OPENROUTER_API_KEY` covers everything. To call TypeSafe directly instead, set `JEV_PROVIDER=typesafe` and `TYPESAFE_API_KEY`. Timeouts (`JEV_TIMEOUT_SECONDS=30`) and retries (`JEV_MAX_RETRIES=2`) are kept short so a slow Jev falls back to a local ranker instead of stalling a chat. Every option is listed in `.env.example`.
+Jev is called through OpenRouter, so `OPENROUTER_API_KEY` covers reranking and answers. It scores the top 15 fused candidates (`JEV_CANDIDATE_LIMIT`); on both eval corpora the evidence is always inside that window. Timeouts (`JEV_TIMEOUT_SECONDS=30`) and retries (`JEV_MAX_RETRIES=2`) are kept short so a slow Jev falls back to a local ranker instead of stalling a chat. Every option is listed in `.env.example`.
+
+---
+
+### Code map (`backend/`)
+
+| Module | Responsibility |
+| --- | --- |
+| `main.py` | HTTP routes and middleware wiring |
+| `security.py` | Sign-in, sessions, CSRF, security headers, rate limits, upload validation |
+| `jobs.py` | Background ingestion queue |
+| `config.py` | Every environment setting, read once |
+| `ingest.py` | Parse, chunk, embed, and store an upload |
+| `pipeline.py` | The question path: condense, hybrid search, Jev, write, check |
+| `pipeline_logic.py` | Pure gates and scoring rules (unit-tested, no I/O) |
+| `rerank.py`, `llm.py`, `embedder.py` | Jev, OpenRouter chat, and embedding clients |
+| `catalog.py`, `index_store.py` | Chroma collections, parent/keyword store, document catalog |
+| `versions.py` | Index versions, the refresh recall gate, rollback |
+| `workspace.py` | Settings, conversations, jobs, analytics |
+| `eval/` | The evaluation harness (see below) |
 
 ---
 
@@ -143,10 +162,12 @@ copy .env.example .env
 # 5. Run the server
 cd backend
 python main.py
+# First start prints an access token (also saved in backend/secrets/access_token).
+# Or set NEEDLE_ACCESS_TOKEN in .env before starting.
 ```
 
 ### Open in Browser
-Navigate to **http://localhost:8000**
+Navigate to **http://localhost:8000** and sign in with the access token.
 
 ---
 

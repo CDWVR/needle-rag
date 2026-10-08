@@ -3,9 +3,21 @@ services:
     name: needle-rag
     env: python
     buildCommand: "pip install -r backend/requirements.txt"
-    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    # --proxy-headers makes rate limits key on the real client, not Render's proxy.
+    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'"
+    healthCheckPath: /health
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
+      # Everyone signs in with this token. Use a long random value (at least 16 characters).
+      - key: NEEDLE_ACCESS_TOKEN
+        sync: false
+      - key: NEEDLE_SESSION_SECRET
+        generateValue: true
+      # Your service hostname, e.g. needle-rag.onrender.com
+      - key: NEEDLE_ALLOWED_HOSTS
+        sync: false
+      - key: NEEDLE_COOKIE_SECURE
+        value: "true"
       - key: PYTHON_VERSION
         value: 3.13.5

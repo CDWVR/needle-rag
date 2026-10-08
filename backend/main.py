@@ -1,3 +1,10 @@
+"""Needle HTTP API and the static workspace UI.
+
+Handlers are plain `def` on purpose: they call SQLite, Chroma, the embedder, and OpenRouter
+synchronously, and FastAPI runs `def` handlers in a thread pool so one slow request does not
+stall the rest. Every /api route except sign-in requires a session (see security.py).
+"""
+
 import hashlib
 import json
 import logging
@@ -5,77 +12,99 @@ import os
 import re
 import shutil
 import time
-from collections import defaultdict
+from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Path, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from rag_engine import (
-    CHUNKING_STRATEGIES,
-    NeedleError,
-    PipelineOptions,
-    PublishBlocked,
+import security
+from catalog import (
     delete_document,
     document_passages,
-    embedding_dimensions,
     env_defaults,
     get_all_documents,
     index_status,
     list_index_versions,
     orphaned_documents,
-    process_document,
-    refresh_active_index,
-    rollback_index,
-    run_pipeline,
 )
+from config import CHUNKING_STRATEGIES, env_bool, env_int, env_str
+from embedder import embedding_dimensions
+from jobs import IngestionQueue
 from paths import data_path
+from pipeline import PipelineOptions, run_pipeline
+from pipeline_logic import NeedleError
+from versions import PublishBlocked, refresh_active_index, rollback_index
 from workspace import WorkspaceStore
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("needle")
 
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".text", ".docx", ".pptx", ".xlsx", ".csv"}
 ROOT = os.path.dirname(__file__)
 FRONTEND_DIR = os.path.join(ROOT, "..", "frontend")
+EVAL_REPORTS_DIR = os.path.join(ROOT, "eval", "reports")
 UPLOAD_DIR = data_path("uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Conversation turns passed to the condense step; older turns add cost, not context.
+HISTORY_TURNS = 20
+UUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 workspace = WorkspaceStore(data_path("workspace.db"))
-EVAL_REPORTS_DIR = os.path.join(ROOT, "eval", "reports")
-_hits: dict = defaultdict(list)
+ingestion = IngestionQueue(workspace, UPLOAD_DIR)
 
-app = FastAPI(title="Needle", description="Source-grounded knowledge workspace", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    ingestion.shutdown(wait=False)
+
+
+app = FastAPI(
+    lifespan=lifespan,
+    title="Needle",
+    description="Source-grounded knowledge workspace",
+    version="2.1.0",
+    # The schema lists every route and payload; keep it off unless explicitly wanted.
+    docs_url="/api/docs" if env_bool("NEEDLE_ENABLE_API_DOCS", False) else None,
+    redoc_url=None,
+    openapi_url="/api/openapi.json" if env_bool("NEEDLE_ENABLE_API_DOCS", False) else None,
+)
+# The last middleware added runs first: host check, CORS, security headers (so even a 401 carries
+# them), then authentication.
+app.add_middleware(security.AuthMiddleware)
+app.add_middleware(security.SecurityHeadersMiddleware)
+_cors = [origin.strip() for origin in env_str("NEEDLE_CORS_ORIGINS", "").split(",") if origin.strip()]
+if _cors:
+    # Only needed when another origin hosts the UI; the bundled UI is same-origin.
+    app.add_middleware(CORSMiddleware, allow_origins=_cors, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                       allow_headers=["content-type", security.CSRF_HEADER, "authorization"], allow_credentials=True)
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    TrustedHostMiddleware,
+    allowed_hosts=[h.strip() for h in env_str("NEEDLE_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",") if h.strip()],
 )
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
-# Handlers below are plain `def` on purpose. They call SQLite, Chroma, the
-# embedder, and OpenRouter synchronously; FastAPI runs `def` handlers in a
-# thread pool, so a long upload or refresh no longer freezes every other request.
+
+# --- request bodies ------------------------------------------------------------------
+
+class LoginRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
 
 
 class ChatRequest(BaseModel):
-    query: str
-    document_id: Optional[str] = None
-    conversation_id: Optional[str] = None
+    query: str = Field(min_length=1, max_length=4000)
+    document_id: Optional[str] = Field(default=None, pattern=UUID)
+    conversation_id: Optional[str] = Field(default=None, pattern=UUID)
 
 
 class SettingsPayload(BaseModel):
-    workspace_name: str = "Needle"
-    profile_name: str = "Operator"
-    default_collection: str = "General"
-    region: str = "European Union"
-    timezone: str = "UTC"
+    workspace_name: str = Field("Needle", max_length=80)
+    profile_name: str = Field("Operator", max_length=80)
+    default_collection: str = Field("General", max_length=60)
     show_traces: bool = True
     allow_downloads: bool = True
     answer_length: Literal["Concise", "Balanced", "Detailed"] = "Balanced"
@@ -93,47 +122,32 @@ class SettingsPayload(BaseModel):
 class PolicyPayload(BaseModel):
     included: Optional[bool] = None
     citation_required: Optional[bool] = None
-    collection: Optional[str] = None
+    collection: Optional[str] = Field(default=None, max_length=60)
 
 
 class FeedbackPayload(BaseModel):
-    rating: str
-
-
-class InvitePayload(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    email: str = Field(min_length=3, max_length=120)
-    role: str = "Member"
+    rating: Literal["helpful", "unhelpful"]
 
 
 class ResetPayload(BaseModel):
-    confirm: str
+    confirm: str = Field(max_length=16)
 
 
-def _allow(key: str, limit: int = 40) -> None:
-    now = time.time()
-    recent = [stamp for stamp in _hits[key] if now - stamp < 60]
-    if len(recent) >= limit:
-        raise HTTPException(status_code=429, detail="Too many requests. Wait a moment and try again.")
-    recent.append(now)
-    _hits[key] = recent
+# --- helpers -------------------------------------------------------------------------
 
-
-def _stored_path(document_id: str) -> Optional[str]:
-    policy = workspace.policy(document_id)
+def _stored_path(policy: Optional[dict]) -> Optional[str]:
     if not policy or not policy.get("stored_name"):
         return None
-    path = os.path.join(UPLOAD_DIR, policy["stored_name"])
+    path = os.path.join(UPLOAD_DIR, os.path.basename(policy["stored_name"]))
     return path if os.path.exists(path) else None
 
 
 def _documents():
     policies = workspace.policies()
-    jobs = workspace.active_jobs()
     documents = []
     for doc in get_all_documents():
         policy = policies.get(doc["id"], {})
-        stored = _stored_path(doc["id"])
+        stored = _stored_path(policy)
         documents.append(
             {
                 **doc,
@@ -145,7 +159,7 @@ def _documents():
                 "downloadable": bool(stored),
             }
         )
-    for job in jobs:
+    for job in workspace.active_jobs():
         documents.append(
             {
                 "id": job["id"],
@@ -164,134 +178,20 @@ def _documents():
     return documents
 
 
-@app.get("/")
-async def serve_frontend():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "service": "Needle", **index_status()}
+def _require_document(document_id: str) -> None:
+    if not any(doc["id"] == document_id for doc in get_all_documents()):
+        raise HTTPException(status_code=404, detail="Document not found.")
 
 
 def _settings_with_drift():
     settings = workspace.settings()
     defaults = env_defaults()
-    drift = {}
-    for key in ("top_k", "similarity_threshold", "rrf_k", "max_parents"):
-        saved = settings.get(key)
-        env_value = defaults.get(key)
-        if saved != env_value:
-            drift[key] = {"saved": saved, "env_default": env_value}
-    return {
-        **settings,
-        "env_defaults": defaults,
-        "settings_drift": drift,
+    drift = {
+        key: {"saved": settings.get(key), "env_default": defaults.get(key)}
+        for key in ("top_k", "similarity_threshold", "rrf_k", "max_parents")
+        if settings.get(key) != defaults.get(key)
     }
-
-
-@app.get("/api/settings")
-def read_settings():
-    return _settings_with_drift()
-
-
-@app.put("/api/settings")
-def write_settings(payload: SettingsPayload):
-    workspace.save_settings(payload.model_dump())
-    workspace.record_run("Settings updated", "Workspace preferences saved", "Success")
-    return _settings_with_drift()
-
-
-@app.get("/api/conversations")
-def read_conversations(q: str = ""):
-    return {"conversations": workspace.list_conversations(q)}
-
-
-@app.post("/api/conversations")
-def create_conversation():
-    return workspace.create_conversation()
-
-
-@app.get("/api/conversations/{conversation_id}")
-def read_conversation(conversation_id: str):
-    messages = workspace.messages(conversation_id)
-    if not messages and not any(item["id"] == conversation_id for item in workspace.list_conversations()):
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    return {"messages": messages}
-
-
-@app.post("/api/messages/{message_id}/feedback")
-def save_feedback(message_id: str, payload: FeedbackPayload):
-    if not workspace.set_feedback(message_id, payload.rating):
-        raise HTTPException(status_code=400, detail="Feedback could not be saved for that answer.")
-    return {"ok": True, "rating": payload.rating}
-
-
-@app.get("/api/members")
-def read_members():
-    return {"members": workspace.list_members()}
-
-
-@app.post("/api/members")
-def invite_member(payload: InvitePayload):
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", payload.email.strip()):
-        raise HTTPException(status_code=400, detail="Enter a valid email address.")
-    try:
-        member = workspace.invite_member(payload.name, payload.email, payload.role)
-    except Exception as exc:
-        log.info("Invite failed: %s", exc)
-        raise HTTPException(status_code=409, detail="A member with that email is already in the workspace.") from exc
-    workspace.record_run("Member invited", f"{member['name']} joined as {member['role']}", "Success")
-    return member
-
-
-@app.get("/api/integrations")
-def read_integrations():
-    return {
-        "integrations": [
-            {"id": "files", "name": "File upload", "connected": True, "detail": "PDF, Word, text, slides, and spreadsheets"},
-            {"id": "drive", "name": "Google Drive", "connected": False, "detail": "Not configured on this server"},
-            {"id": "notion", "name": "Notion", "connected": False, "detail": "Not configured on this server"},
-            {"id": "slack", "name": "Slack", "connected": False, "detail": "Not configured on this server"},
-        ]
-    }
-
-
-@app.post("/api/workspace/reset")
-def reset_workspace(payload: ResetPayload):
-    if payload.confirm != "DELETE":
-        raise HTTPException(status_code=400, detail="Type DELETE to remove the workspace data.")
-    for document in get_all_documents():
-        delete_document(document["id"])
-        path = _stored_path(document["id"])
-        if path and os.path.exists(path):
-            os.remove(path)
-    workspace.reset()
-    if os.path.isdir(UPLOAD_DIR):
-        shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-    return {"ok": True}
-
-
-@app.get("/api/index")
-def read_index():
-    status = index_status()
-    documents = _documents()
-    indexed = [doc for doc in documents if doc["status"] == "indexed"]
-    return {
-        **status,
-        "documents": len(indexed),
-        "chunks": sum(doc["chunk_count"] or 0 for doc in indexed),
-        "storage_bytes": sum(doc["bytes"] or 0 for doc in indexed),
-        "runs": workspace.recent_runs(),
-        "embedding_dimensions": embedding_dimensions(),
-        "stats": workspace.pipeline_stats(),
-    }
-
-
-@app.get("/api/index/versions")
-def read_index_versions():
-    return {"versions": list_index_versions()}
+    return {**settings, "env_defaults": defaults, "settings_drift": drift}
 
 
 def _eval_summary(suite: str) -> Optional[dict]:
@@ -306,6 +206,115 @@ def _eval_summary(suite: str) -> Optional[dict]:
     return {key: report.get(key) for key in ("suite", "tier", "finished_at", "commit", "questions", "metrics", "gate")}
 
 
+def _sse(payload) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+# --- shell, health, and sessions -------------------------------------------------------
+
+@app.get("/")
+async def serve_frontend():
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+
+
+@app.get("/health")
+def health_check():
+    # Public, so it says nothing about models, documents, or configuration.
+    return {"status": "ok"}
+
+
+@app.get("/api/auth/session")
+def read_session(request: Request):
+    return {"authenticated": security.is_authenticated(request), "auth_disabled": security.AUTH_DISABLED}
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginRequest, request: Request, response: Response):
+    security.rate_limit(request, "login")
+    if not security.token_matches(payload.token.strip()):
+        log.warning("Failed sign-in from %s", security.client_id(request))
+        raise HTTPException(status_code=401, detail="That access token is not valid.")
+    security.set_session_cookie(response, request)
+    return {"authenticated": True}
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    response.delete_cookie(security.SESSION_COOKIE, path="/")
+    return {"authenticated": False}
+
+
+# --- settings and conversations ---------------------------------------------------------
+
+@app.get("/api/settings")
+def read_settings():
+    return _settings_with_drift()
+
+
+@app.put("/api/settings")
+def write_settings(payload: SettingsPayload):
+    workspace.save_settings(payload.model_dump())
+    workspace.record_run("Settings updated", "Workspace preferences saved", "Success")
+    return _settings_with_drift()
+
+
+@app.get("/api/conversations")
+def read_conversations(q: str = Query("", max_length=200)):
+    return {"conversations": workspace.list_conversations(q)}
+
+
+@app.post("/api/conversations")
+def create_conversation():
+    return workspace.create_conversation()
+
+
+@app.get("/api/conversations/{conversation_id}")
+def read_conversation(conversation_id: str = Path(pattern=UUID)):
+    if not workspace.conversation_exists(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"messages": workspace.messages(conversation_id)}
+
+
+@app.post("/api/messages/{message_id}/feedback")
+def save_feedback(payload: FeedbackPayload, message_id: str = Path(pattern=UUID)):
+    if not workspace.set_feedback(message_id, payload.rating):
+        raise HTTPException(status_code=400, detail="Feedback could not be saved for that answer.")
+    return {"ok": True, "rating": payload.rating}
+
+
+@app.post("/api/workspace/reset")
+def reset_workspace(payload: ResetPayload):
+    if payload.confirm != "DELETE":
+        raise HTTPException(status_code=400, detail="Type DELETE to remove the workspace data.")
+    for document in get_all_documents():
+        delete_document(document["id"])
+    workspace.reset()
+    shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    return {"ok": True}
+
+
+# --- index ---------------------------------------------------------------------------------
+
+@app.get("/api/index")
+def read_index():
+    indexed = [doc for doc in _documents() if doc["status"] == "indexed"]
+    return {
+        **index_status(),
+        "documents": len(indexed),
+        "chunks": sum(doc["chunk_count"] or 0 for doc in indexed),
+        "storage_bytes": sum(doc["bytes"] or 0 for doc in indexed),
+        "runs": workspace.recent_runs(),
+        "embedding_dimensions": embedding_dimensions(),
+        "stats": workspace.pipeline_stats(),
+    }
+
+
+@app.get("/api/index/versions")
+def read_index_versions():
+    return {"versions": list_index_versions()}
+
+
 @app.get("/api/eval/latest")
 def read_latest_eval():
     """Summaries of the most recent eval runs (written by `python -m eval`)."""
@@ -313,7 +322,8 @@ def read_latest_eval():
 
 
 @app.post("/api/index/refresh")
-def refresh_index(publish_override: bool = False):
+def refresh_index(request: Request, publish_override: bool = False):
+    security.rate_limit(request, "refresh")
     started = time.perf_counter()
     if publish_override:
         workspace.record_run(
@@ -321,27 +331,22 @@ def refresh_index(publish_override: bool = False):
             "Publish override requested: the minimum golden-set size check is skipped for this handoff.",
             "Warning",
         )
-        log.warning("Index refresh running with publish_override=true")
     try:
         settings = workspace.settings()
-        style = "contextual" if settings["contextual_embeddings"] else "raw"
         hashes = {
             doc_id: policy.get("content_hash")
             for doc_id, policy in workspace.policies().items()
             if policy.get("content_hash") and not policy.get("deleted")
         }
         status = refresh_active_index(
-            style,
+            "contextual" if settings["contextual_embeddings"] else "raw",
             settings["chunking"],
             hashes,
             publish_override=publish_override,
         )
     except PublishBlocked as exc:
         workspace.record_run("Version handoff", str(exc), "Blocked")
-        raise HTTPException(
-            status_code=409,
-            detail={"message": str(exc), "overridable": exc.overridable},
-        ) from exc
+        raise HTTPException(status_code=409, detail={"message": str(exc), "overridable": exc.overridable}) from exc
     except NeedleError as exc:
         workspace.record_run("Version handoff", str(exc), "Failed")
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -350,136 +355,9 @@ def refresh_index(publish_override: bool = False):
         detail = "Index refresh failed before the new version was published."
         workspace.record_run("Version handoff", detail, "Failed")
         raise HTTPException(status_code=500, detail=detail) from exc
-    elapsed = int((time.perf_counter() - started) * 1000)
-    note = f"Published {status['version_id']} in {elapsed} ms"
-    if publish_override:
-        note += " (publish_override=true)"
-    workspace.record_run("Version handoff", note, "Success")
+    note = f"Published {status['version_id']} in {int((time.perf_counter() - started) * 1000)} ms"
+    workspace.record_run("Version handoff", note + (" (publish_override=true)" if publish_override else ""), "Success")
     return status
-
-
-@app.get("/api/analytics")
-def read_analytics(days: int = 30):
-    if days not in {7, 30, 90}:
-        raise HTTPException(status_code=400, detail="Choose 7, 30, or 90 days.")
-    return workspace.analytics(days)
-
-
-@app.get("/api/analytics/export")
-def export_analytics(days: int = 30):
-    report = workspace.analytics(days if days in {7, 30, 90} else 30)
-    lines = ["day,questions,grounded"]
-    for point in report["series"]:
-        lines.append(f"{point['day']},{point['questions']},{point['grounded']}")
-    return StreamingResponse(
-        iter(["\n".join(lines) + "\n"]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=needle-analytics-{report['days']}d.csv"},
-    )
-
-
-@app.post("/api/upload")
-def upload_document(file: UploadFile = File(...)):
-    filename = os.path.basename(file.filename or "document")
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Upload a PDF, Word, text, slides, or spreadsheet file.")
-    file_bytes = file.file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if len(file_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail="File is larger than 50 MB.")
-    digest = hashlib.sha256(file_bytes).hexdigest()
-    existing_id = workspace.find_hash(digest)
-    if existing_id:
-        return {
-            "id": existing_id,
-            "name": filename,
-            "duplicate": True,
-            "message": "This file is already indexed, so it was not ingested again.",
-        }
-    settings = workspace.settings()
-    job_id = workspace.start_job(filename)
-    workspace.update_job(job_id, "processing")
-    try:
-        doc = process_document(file_bytes, filename, file.content_type or "", content_hash=digest)
-    except Exception as exc:
-        log.exception("Upload failed")
-        message = str(exc) if isinstance(exc, (ValueError, NeedleError)) else "The file could not be indexed."
-        workspace.update_job(job_id, "failed", message)
-        workspace.record_run("Ingestion", f"{filename} failed", "Failed")
-        raise HTTPException(status_code=400, detail=message) from exc
-    stored_name = f"{doc.id}{ext}"
-    with open(os.path.join(UPLOAD_DIR, stored_name), "wb") as handle:
-        handle.write(file_bytes)
-    workspace.set_policy(
-        doc.id,
-        collection=settings["default_collection"],
-        byte_size=len(file_bytes),
-        stored_name=stored_name,
-        content_hash=digest,
-    )
-    workspace.update_job(job_id, "completed", document_id=doc.id)
-    workspace.record_run("Ingestion", f"{filename}: {doc.num_chunks} chunks", "Success")
-    return {
-        "id": doc.id,
-        "name": doc.name,
-        "num_chunks": doc.num_chunks,
-        "num_pages": doc.num_pages,
-        "file_type": doc.file_type,
-        "uploaded_at": doc.uploaded_at,
-    }
-
-
-@app.get("/api/documents")
-def list_documents():
-    return {"documents": _documents()}
-
-
-@app.get("/api/documents/{document_id}")
-def read_document(document_id: str):
-    match = next((doc for doc in _documents() if doc["id"] == document_id and doc["status"] == "indexed"), None)
-    if not match:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    passages = document_passages(document_id)
-    return {**match, "passages": passages[:40], "passage_count": len(passages)}
-
-
-@app.patch("/api/documents/{document_id}")
-def update_document(document_id: str, payload: PolicyPayload):
-    if not any(doc["id"] == document_id for doc in get_all_documents()):
-        raise HTTPException(status_code=404, detail="Document not found.")
-    if not workspace.policy(document_id):
-        workspace.set_policy(document_id, collection="General", byte_size=0, stored_name="")
-    updated = workspace.update_policy(document_id, payload.model_dump(exclude_none=True))
-    return updated
-
-
-@app.get("/api/documents/{document_id}/file")
-def download_document(document_id: str):
-    if not workspace.settings()["allow_downloads"]:
-        raise HTTPException(status_code=403, detail="Source downloads are turned off in settings.")
-    path = _stored_path(document_id)
-    if not path:
-        raise HTTPException(status_code=404, detail="The original file is not stored for this document.")
-    policy = workspace.policy(document_id) or {}
-    return FileResponse(path, filename=policy.get("stored_name") or os.path.basename(path))
-
-
-@app.delete("/api/documents/{document_id}")
-def remove_document(document_id: str):
-    if not any(doc["id"] == document_id for doc in get_all_documents()):
-        raise HTTPException(status_code=404, detail="Document not found.")
-    workspace.tombstone(document_id)
-    found = delete_document(document_id)
-    path = _stored_path(document_id)
-    if path and os.path.exists(path):
-        os.remove(path)
-    workspace.forget_document(document_id)
-    if not found:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    workspace.record_run("Deletion propagation", f"Removed {document_id}", "Success")
-    return {"success": True, "found": found}
 
 
 @app.post("/api/index/rollback")
@@ -495,13 +373,13 @@ def rollback():
 def reconcile():
     removed = 0
     live = {doc["id"] for doc in get_all_documents()}
-    for doc_id, policy in workspace.policies().items():
+    policies = workspace.policies()
+    for doc_id, policy in policies.items():
         if policy.get("deleted") and doc_id in live:
             delete_document(doc_id)
             removed += 1
     for name in os.listdir(UPLOAD_DIR):
-        document_id = os.path.splitext(name)[0]
-        policy = workspace.policy(document_id)
+        policy = policies.get(os.path.splitext(name)[0])
         if not policy or policy.get("deleted"):
             os.remove(os.path.join(UPLOAD_DIR, name))
             removed += 1
@@ -513,19 +391,122 @@ def reconcile():
     return {"removed": removed, "orphaned_documents": orphans}
 
 
+# --- analytics -------------------------------------------------------------------------------
+
+@app.get("/api/analytics")
+def read_analytics(days: Literal[7, 30, 90] = 30):
+    return workspace.analytics(days)
+
+
+@app.get("/api/analytics/export")
+def export_analytics(days: Literal[7, 30, 90] = 30):
+    report = workspace.analytics(days)
+    lines = ["day,questions,grounded"] + [f"{p['day']},{p['questions']},{p['grounded']}" for p in report["series"]]
+    return StreamingResponse(
+        iter(["\n".join(lines) + "\n"]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=needle-analytics-{days}d.csv"},
+    )
+
+
+# --- documents -------------------------------------------------------------------------------
+
+@app.post("/api/upload", status_code=202)
+def upload_document(request: Request, file: UploadFile = File(...)):
+    security.rate_limit(request, "upload")
+    filename = security.clean_filename(file.filename or "")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in security.ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Upload a PDF, Word, text, slides, or spreadsheet file.")
+    data = security.read_upload(file, request.headers.get("content-length"))
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    security.validate_content(data, ext)
+    digest = hashlib.sha256(data).hexdigest()
+    existing_id = workspace.find_hash(digest)
+    if existing_id:
+        return {"id": existing_id, "name": filename, "status": "duplicate",
+                "message": "This file is already indexed, so it was not ingested again."}
+    if not ingestion.claim(digest):
+        raise HTTPException(status_code=409, detail="This file is already being indexed.")
+    job_id = workspace.start_job(filename)
+    ingestion.submit(job_id=job_id, data=data, filename=filename, ext=ext, content_hash=digest,
+                     collection=workspace.settings()["default_collection"])
+    return {"job_id": job_id, "name": filename, "status": "queued"}
+
+
+@app.get("/api/jobs/{job_id}")
+def read_job(job_id: str = Path(pattern=UUID)):
+    job = workspace.job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Upload not found.")
+    return {key: job[key] for key in ("id", "filename", "status", "error", "document_id", "created_at", "updated_at")}
+
+
+@app.get("/api/documents")
+def list_documents():
+    return {"documents": _documents()}
+
+
+@app.get("/api/documents/{document_id}")
+def read_document(document_id: str = Path(pattern=UUID)):
+    match = next((doc for doc in _documents() if doc["id"] == document_id and doc["status"] == "indexed"), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    passages = document_passages(document_id)
+    return {**match, "passages": passages[:40], "passage_count": len(passages)}
+
+
+@app.patch("/api/documents/{document_id}")
+def update_document(payload: PolicyPayload, document_id: str = Path(pattern=UUID)):
+    _require_document(document_id)
+    if not workspace.policy(document_id):
+        workspace.set_policy(document_id, collection="General", byte_size=0, stored_name="")
+    return workspace.update_policy(document_id, payload.model_dump(exclude_none=True))
+
+
+@app.get("/api/documents/{document_id}/file")
+def download_document(document_id: str = Path(pattern=UUID)):
+    if not workspace.settings()["allow_downloads"]:
+        raise HTTPException(status_code=403, detail="Source downloads are turned off in settings.")
+    policy = workspace.policy(document_id)
+    path = _stored_path(policy)
+    if not path:
+        raise HTTPException(status_code=404, detail="The original file is not stored for this document.")
+    name = next((doc["name"] for doc in get_all_documents() if doc["id"] == document_id), os.path.basename(path))
+    ext = os.path.splitext(path)[1].lower()
+    # Always an attachment with a fixed, non-executable type: a stored file is never rendered as a page.
+    return FileResponse(path, filename=security.clean_filename(name), content_disposition_type="attachment",
+                        media_type=security.DOWNLOAD_TYPES.get(ext, "application/octet-stream"))
+
+
+@app.delete("/api/documents/{document_id}")
+def remove_document(document_id: str = Path(pattern=UUID)):
+    _require_document(document_id)
+    policy = workspace.policy(document_id)
+    workspace.tombstone(document_id)
+    found = delete_document(document_id)
+    path = _stored_path(policy)
+    if path:
+        os.remove(path)
+    workspace.forget_document(document_id)
+    workspace.record_run("Deletion propagation", f"Removed {document_id}", "Success")
+    return {"success": True, "found": found}
+
+
+# --- chat ---------------------------------------------------------------------------------------
+
 @app.post("/api/chat")
-def chat(request: ChatRequest):
-    _allow("chat")
-    query = request.query.strip()
+def chat(payload: ChatRequest, request: Request):
+    security.rate_limit(request, "chat")
+    query = payload.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
-    if len(query) > 4000:
-        raise HTTPException(status_code=400, detail="Question is too long.")
     settings = workspace.settings()
-    conversation_id = workspace.ensure_conversation(request.conversation_id, query, request.document_id)
+    conversation_id = workspace.ensure_conversation(payload.conversation_id, query, payload.document_id)
     history = [
         {"role": message["role"], "content": message["content"]}
-        for message in workspace.messages(conversation_id)
+        for message in workspace.messages(conversation_id)[-HISTORY_TURNS:]
     ]
     user_message_id = workspace.add_message(conversation_id, "user", query, original_query=query)
     options = PipelineOptions(
@@ -540,18 +521,13 @@ def chat(request: ChatRequest):
     )
 
     def event_stream():
-        answer = []
-        sources = []
-        validation = None
-        trace = None
-        result = {}
-        failed = None
+        answer, sources, validation, trace, result, failed = [], [], None, None, {}, None
         yield _sse({"type": "conversation", "id": conversation_id})
         try:
             for event in run_pipeline(
                 query,
                 history=history,
-                document_id=request.document_id,
+                document_id=payload.document_id,
                 exclude_document_ids=workspace.excluded_document_ids(),
                 citation_required_ids=workspace.citation_required_ids(),
                 options=options,
@@ -586,21 +562,20 @@ def chat(request: ChatRequest):
         message_id = workspace.add_message(conversation_id, "assistant", content, sources, validation, trace)
         scores = [source.get("vector_similarity") for source in sources if source.get("vector_similarity") is not None]
         category = result.get("reject_category")
-        if result.get("passed") and not result.get("declined"):
+        declined = bool(result.get("declined"))
+        if result.get("passed") and not declined:
             outcome = "answered"
-        elif result.get("declined"):
-            outcome = "no_coverage"
         elif failed or category in {"infra_error", "pipeline_error"}:
             outcome = "error"
-        elif category in {"retrieval_abstain", "empty_question", "injection_scan"}:
+        elif declined or category in {"retrieval_abstain", "empty_question", "injection_scan"}:
             outcome = "no_coverage"
         else:
             outcome = "check_failed"
         released = bool(result.get("released"))
         workspace.record_event(
             query=query,
-            grounded=bool(result.get("passed")) and not result.get("declined"),
-            withheld=not released or bool(result.get("declined")),
+            grounded=bool(result.get("passed")) and not declined,
+            withheld=not released or declined,
             outcome=outcome,
             latency_ms=int(latencies.get("total") or 0),
             retrieval_ms=int((latencies.get("retrieve") or 0) + (latencies.get("rerank") or 0)),
@@ -616,19 +591,15 @@ def chat(request: ChatRequest):
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-def _sse(payload) -> str:
-    return f"data: {json.dumps(payload)}\n\n"
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    print("\n" + "=" * 50)
-    print("Server starting. Open this link in your browser:")
-    print("http://localhost:8000")
-    print("=" * 50 + "\n")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Loopback by default. Set NEEDLE_HOST=0.0.0.0 (and NEEDLE_ALLOWED_HOSTS) to serve a network.
+    host = env_str("NEEDLE_HOST", "127.0.0.1")
+    port = env_int("NEEDLE_PORT", 8000)
+    print(f"\nNeedle is running at http://{'localhost' if host in {'127.0.0.1', '0.0.0.0'} else host}:{port}\n")
+    uvicorn.run(app, host=host, port=port)

@@ -20,10 +20,28 @@ export const errorMessage = (data, fallback = "Request failed") => {
   return fallback;
 };
 
-const json = async (url, options = {}) => {
+// Every request carries this header. A page on another site cannot set it without a CORS
+// preflight the server never grants, so the server rejects cross-site writes that lack it.
+const CSRF = { "X-Needle-CSRF": "1" };
+const id = (value) => encodeURIComponent(String(value ?? ""));
+
+// The app listens for this and shows the sign-in screen.
+const authRequired = () => window.dispatchEvent(new CustomEvent("needle:auth-required"));
+
+export const request = async (url, options = {}) => {
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    credentials: "same-origin",
     ...options,
+    headers: { ...CSRF, ...(options.headers || {}) },
+  });
+  if (response.status === 401 && !url.startsWith("/api/auth/")) authRequired();
+  return response;
+};
+
+const json = async (url, options = {}) => {
+  const response = await request(url, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(errorMessage(data), response.status, data?.detail);
@@ -31,15 +49,20 @@ const json = async (url, options = {}) => {
 };
 
 export const api = {
+  session: () => json("/api/auth/session"),
+  login: (token) => json("/api/auth/login", { method: "POST", body: JSON.stringify({ token }) }),
+  logout: () => json("/api/auth/logout", { method: "POST", body: "{}" }),
   settings: () => json("/api/settings"),
   saveSettings: (body) => json("/api/settings", { method: "PUT", body: JSON.stringify(body) }),
   conversations: (q = "") => json(`/api/conversations?q=${encodeURIComponent(q)}`),
   createConversation: () => json("/api/conversations", { method: "POST", body: "{}" }),
-  conversation: (id) => json(`/api/conversations/${id}`),
+  conversation: (conversationId) => json(`/api/conversations/${id(conversationId)}`),
   documents: () => json("/api/documents"),
-  document: (id) => json(`/api/documents/${id}`),
-  updateDocument: (id, body) => json(`/api/documents/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  deleteDocument: (id) => json(`/api/documents/${id}`, { method: "DELETE" }),
+  document: (documentId) => json(`/api/documents/${id(documentId)}`),
+  updateDocument: (documentId, body) => json(`/api/documents/${id(documentId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteDocument: (documentId) => json(`/api/documents/${id(documentId)}`, { method: "DELETE" }),
+  documentFile: (documentId) => request(`/api/documents/${id(documentId)}/file`),
+  job: (jobId) => json(`/api/jobs/${id(jobId)}`),
   index: () => json("/api/index"),
   refreshIndex: (override = false) =>
     json(`/api/index/refresh${override ? "?publish_override=true" : ""}`, { method: "POST", body: "{}" }),
@@ -47,18 +70,18 @@ export const api = {
   evalLatest: () => json("/api/eval/latest"),
   rollbackIndex: () => json("/api/index/rollback", { method: "POST", body: "{}" }),
   reconcileIndex: () => json("/api/index/reconcile", { method: "POST", body: "{}" }),
-  analytics: (days) => json(`/api/analytics?days=${days}`),
-  members: () => json("/api/members"),
-  invite: (body) => json("/api/members", { method: "POST", body: JSON.stringify(body) }),
-  integrations: () => json("/api/integrations"),
-  feedback: (id, rating) => json(`/api/messages/${id}/feedback`, { method: "POST", body: JSON.stringify({ rating }) }),
+  analytics: (days) => json(`/api/analytics?days=${id(days)}`),
+  analyticsExport: (days) => request(`/api/analytics/export?days=${id(days)}`),
+  feedback: (messageId, rating) => json(`/api/messages/${id(messageId)}/feedback`, { method: "POST", body: JSON.stringify({ rating }) }),
   reset: () => json("/api/workspace/reset", { method: "POST", body: JSON.stringify({ confirm: "DELETE" }) }),
+  chat: (body) =>
+    request("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   upload: async (file) => {
     const body = new FormData();
     body.append("file", file);
-    const response = await fetch("/api/upload", { method: "POST", body });
+    const response = await request("/api/upload", { method: "POST", body });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(errorMessage(data, "Upload failed"));
+    if (!response.ok) throw new ApiError(errorMessage(data, "Upload failed"), response.status, data?.detail);
     return data;
   },
 };

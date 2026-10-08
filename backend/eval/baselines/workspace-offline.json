@@ -1,10 +1,11 @@
 {
   "suite": "workspace",
   "tier": "offline",
-  "recorded_at": "2026-10-07T17:53:09.840576+00:00",
-  "commit": "352ae59f0f649ae1b25af4ea6b8b4bf7cb03da04",
+  "recorded_at": "2026-10-08T18:13:57.147694+00:00",
+  "commit": "98e15b355811ef8c31a401c5e17728a9ce86d87e",
   "fingerprint": {
-    "dataset_sha256": "2eee16d93860c344",
+    "embedding": "all-MiniLM-L6-v2",
+    "dataset_sha256": "0573c197d4b3dc70",
     "corpus": null,
     "selection": {
       "ids": null,
@@ -75,13 +76,13 @@
         "n": 87
       },
       "retrieve": {
-        "p50": 436.4,
-        "p95": 772.5,
+        "p50": 538.0,
+        "p95": 855.7,
         "n": 87
       },
       "total": {
-        "p50": 866.7,
-        "p95": 1089.5,
+        "p50": 982.4,
+        "p95": 1293.6,
         "n": 87
       }
     },

@@ -268,6 +268,19 @@ class IndexStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def fetch_parents(self, parent_ids) -> Dict[str, Dict[str, Any]]:
+        """Many parents in one query per 500 ids (SQLite's variable limit is 999)."""
+        ids = list(dict.fromkeys(parent_ids))
+        found: Dict[str, Dict[str, Any]] = {}
+        with self._lock:
+            for start in range(0, len(ids), 500):
+                batch = ids[start:start + 500]
+                rows = self.conn.execute(
+                    f"SELECT * FROM parents WHERE parent_id IN ({', '.join('?' for _ in batch)})", batch
+                ).fetchall()
+                found.update({row["parent_id"]: dict(row) for row in rows})
+        return found
+
     def keyword_search(
         self,
         fts_query: str,
