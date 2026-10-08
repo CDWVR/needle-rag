@@ -1,0 +1,951 @@
+{
+  "suite": "hermetic",
+  "tier": "full",
+  "recorded_at": "2026-10-08T18:41:46.395827+00:00",
+  "commit": "98e15b355811ef8c31a401c5e17728a9ce86d87e",
+  "fingerprint": {
+    "embedding": "all-MiniLM-L6-v2",
+    "dataset_sha256": "5a39c56178c05499",
+    "corpus": "64a6d0ad8501827d",
+    "selection": {
+      "ids": null,
+      "tags": null,
+      "limit": null
+    }
+  },
+  "models": {
+    "embedding": "all-MiniLM-L6-v2",
+    "jev": "openrouter:typesafe/jev-1.13",
+    "writer": "deepseek/deepseek-v4.1-flash",
+    "checker": "deepseek/deepseek-v4.1-flash",
+    "judge": null
+  },
+  "metrics": {
+    "questions": 117,
+    "retrieval": {
+      "hit_at_1": 0.9375,
+      "hit_at_3": 1.0,
+      "hit_at_5": 1.0,
+      "hit_at_10": 1.0,
+      "recall_at_k": 1.0,
+      "ndcg_at_k": 0.9733,
+      "page_hit_at_k": 1.0,
+      "mrr": 0.967,
+      "n": 96,
+      "hit_at_5_ci": {
+        "low": 1.0,
+        "high": 1.0
+      }
+    },
+    "by_type": {
+      "exact": {
+        "n": 14,
+        "hit_at_5": 1.0,
+        "mrr": 1.0,
+        "answered": 0.9286,
+        "key_fact_recall": 1.0,
+        "abstained": 0.0714
+      },
+      "factual": {
+        "n": 65,
+        "hit_at_5": 1.0,
+        "mrr": 0.959,
+        "answered": 0.9846,
+        "key_fact_recall": 1.0,
+        "abstained": 0.0154
+      },
+      "followup": {
+        "n": 9,
+        "hit_at_5": 1.0,
+        "mrr": 1.0,
+        "answered": 0.8889,
+        "key_fact_recall": 1.0,
+        "abstained": 0.1111
+      },
+      "multihop": {
+        "n": 8,
+        "hit_at_5": 1.0,
+        "mrr": 0.9375,
+        "answered": 1.0,
+        "key_fact_recall": 0.9375,
+        "abstained": 0.0
+      },
+      "unanswerable": {
+        "n": 21,
+        "hit_at_5": null,
+        "mrr": null,
+        "answered": null,
+        "key_fact_recall": null,
+        "abstained": 0.9524
+      }
+    },
+    "latency_ms": {
+      "check": {
+        "p50": 4368.8,
+        "p95": 18287.8,
+        "n": 105
+      },
+      "condense": {
+        "p50": 0.0,
+        "p95": 2329.0,
+        "n": 117
+      },
+      "rerank": {
+        "p50": 8800.0,
+        "p95": 15797.6,
+        "n": 117
+      },
+      "retrieve": {
+        "p50": 258.7,
+        "p95": 1105.5,
+        "n": 117
+      },
+      "retry": {
+        "p50": 10336.1,
+        "p95": 16406.0,
+        "n": 14
+      },
+      "total": {
+        "p50": 16760.3,
+        "p95": 30678.2,
+        "n": 117
+      },
+      "write": {
+        "p50": 2694.4,
+        "p95": 4857.7,
+        "n": 105
+      }
+    },
+    "cost": {
+      "total_usd": 0.045294,
+      "per_question_usd": 0.0004
+    },
+    "infra": {
+      "errors": 0,
+      "share": 0.0
+    },
+    "pipeline_errors": 0,
+    "answers": {
+      "answer_rate": 0.9677,
+      "answer_rate_ci": {
+        "low": 0.9247,
+        "high": 1.0
+      },
+      "false_refusal_rate": 0.0323,
+      "key_fact_recall": 0.9944,
+      "fully_correct_rate": 0.9889,
+      "citation_validity": 1.0,
+      "evidence_citation_rate": 0.9889,
+      "partial_rate": 0.0333,
+      "released_unanswerable": 1,
+      "declined_rate": 0.0855,
+      "n_answerable": 93
+    },
+    "abstention": {
+      "precision": 0.8696,
+      "recall": 0.9524,
+      "f1": 0.9091,
+      "tp": 20,
+      "fp": 3,
+      "fn": 1,
+      "tn": 93,
+      "recall_near_miss": 0.9333,
+      "recall_off_topic": 1.0
+    },
+    "safety": {
+      "injection_rows": 3,
+      "injection_released": 3,
+      "injection_leaks": 0
+    },
+    "reject_categories": {
+      "accepted": 104,
+      "retrieval_abstain": 12,
+      "checker_unparseable": 1
+    }
+  },
+  "per_question": {
+    "man-payload": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-runtime": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-charge": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-slow-zone": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-stop-zone": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-wheels": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-battery-warranty": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-estop-release": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-supervise": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-ramp": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-mass": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-pedestrian-speed": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-e221": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-e104": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-e512": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-e455": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-fw421": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "man-ip": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 0.0
+    },
+    "man-firmware-scope": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-duration": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-cause": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-carts": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-sites": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-network": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-alert": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-owner": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-tickets": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-cart-hours": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "pm-lesson": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "price-growth": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "price-scale-carts": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "price-247": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "price-cold-sku": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "price-scale-minimum": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "price-lidar": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-uptime": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-onboarding": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-retention": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-eu-data": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-cancel": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-premium-response": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-credit": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-apac": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-firmware-free": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "faq-collection": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "travel26-economy": {
+      "hit_at_5": 1.0,
+      "rr": 0.5,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "travel25-economy": {
+      "hit_at_5": 1.0,
+      "rr": 0.5,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "travel26-london": {
+      "hit_at_5": 1.0,
+      "rr": 0.5,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "travel25-perdiem": {
+      "hit_at_5": 1.0,
+      "rr": 0.3333333333333333,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "travel-current-report": {
+      "hit_at_5": 1.0,
+      "rr": 0.5,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "travel26-business": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 0.0
+    },
+    "travel-late-booking": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-revenue": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-hub": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-tern4-budget": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-freeze": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-next": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-runway": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-chair": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "board-lidar-risk": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-accrual": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-carryover": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-core-hours": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-oncall": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-meals": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-training": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-parental": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-laptops": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-expiry": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-office-days": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-allowance": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "hb-lost-equipment": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "rnn-gates": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "rnn-teacher": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "ir-bm25": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "ir-rrf": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "multi-uptime-outage": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "multi-e630": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "multi-payloads": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "multi-premium": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "multi-cold": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "multi-hotel-change": {
+      "hit_at_5": 1.0,
+      "rr": 0.5,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 0.5,
+      "cites_evidence": 0.0
+    },
+    "multi-outage-owner": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "multi-fw-incident": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-runtime": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-due": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-hotel": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 0.0
+    },
+    "fu-start-carts": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-hub-date": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-carryover": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-e317": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-americas": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-cause": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "fu-net-profit": {},
+    "vendor-gates": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "vendor-contract": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "vendor-lead-time": {
+      "hit_at_5": 1.0,
+      "rr": 1.0,
+      "recall_at_k": 1.0,
+      "answered": 1.0,
+      "key_fact_recall": 1.0,
+      "cites_evidence": 1.0
+    },
+    "na-ramp-payload": {},
+    "na-tern4-price": {},
+    "na-lidar-volume": {},
+    "na-rotterdam-outage": {},
+    "na-mileage": {},
+    "na-oncall-name": {},
+    "na-credit-cost": {},
+    "na-tern4-battery": {},
+    "na-e700": {},
+    "na-us-pto": {},
+    "na-margin-target": {},
+    "na-cold-install": {},
+    "na-annual-discount": {},
+    "na-supplier-name": {},
+    "off-capital": {},
+    "off-novel": {},
+    "off-sourdough": {},
+    "off-boiling": {},
+    "off-worldcup": {},
+    "off-quicksort": {}
+  }
+}

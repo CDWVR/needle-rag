@@ -1,0 +1,72 @@
+# Self-hosted BGE-M3 via Hugging Face Text Embeddings Inference.
+# Weights are cached in the named volume `tei-bge-m3-cache`.
+#
+# CPU:
+#   docker compose -f docker-compose.tei.yml up -d
+# GPU (NVIDIA):
+#   docker compose -f docker-compose.tei.yml --profile gpu up -d tei-bge-m3-gpu
+#
+# Endpoint: http://127.0.0.1:18080  (OpenAI-compatible /embeddings and TEI /embed)
+
+services:
+  tei-bge-m3:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
+    container_name: needle-tei-bge-m3
+    ports:
+      - "18080:80"
+    volumes:
+      - tei-bge-m3-cache:/data
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    command:
+      - --model-id
+      - BAAI/bge-m3
+      - --tokenization-workers
+      - "2"
+      - --max-client-batch-size
+      - "64"
+      - --max-batch-tokens
+      - "16384"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  tei-bge-m3-gpu:
+    profiles: ["gpu"]
+    image: ghcr.io/huggingface/text-embeddings-inference:1.7
+    container_name: needle-tei-bge-m3-gpu
+    ports:
+      - "18080:80"
+    volumes:
+      - tei-bge-m3-cache:/data
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    command:
+      - --model-id
+      - BAAI/bge-m3
+      - --max-client-batch-size
+      - "64"
+      - --max-batch-tokens
+      - "16384"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+
+volumes:
+  tei-bge-m3-cache:
+    name: tei-bge-m3-cache

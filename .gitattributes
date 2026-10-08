@@ -1,0 +1,5 @@
+# Text files are stored with LF. The eval corpus and golden sets must be byte-identical on every
+# platform, because their fingerprints decide whether a run is comparable with the baseline.
+* text=auto eol=lf
+*.pdf binary
+*.png binary

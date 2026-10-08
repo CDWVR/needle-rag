@@ -1,0 +1,68 @@
+{
+  "k": 5,
+  "pipeline": {
+    "top_k": 30,
+    "similarity_threshold": 0.30,
+    "rrf_k": 60,
+    "max_parents": 5,
+    "jev_relevance_threshold": 0.20,
+    "retry_threshold": 0.35,
+    "retry_top_k": 40,
+    "jev_candidate_limit": 15,
+    "answer_length": "Balanced",
+    "require_citations": true,
+    "citation_style": "Inline numbered"
+  },
+  "suites": {
+    "hermetic": {
+      "dataset": "datasets/hermetic.jsonl",
+      "description": "Repo-owned corpus (eval/corpus) ingested into a throwaway data dir. Reproducible anywhere; this is the CI gate."
+    },
+    "workspace": {
+      "dataset": "datasets/workspace.jsonl",
+      "description": "Questions about your own uploaded documents, run against your live index (read-only). Rows whose documents are not indexed are skipped."
+    }
+  },
+  "tiers": {
+    "offline": {
+      "description": "Retrieval only, fused ranking, no model calls. Deterministic and free.",
+      "rerank_mode": "fused_only",
+      "allow_retry": false,
+      "generate": false,
+      "use_history": false
+    },
+    "full": {
+      "description": "The production path: condense, Jev rerank, retry, writer, checker. Costs OpenRouter credit.",
+      "rerank_mode": "jev_filter",
+      "allow_retry": true,
+      "generate": true,
+      "use_history": true,
+      "estimated_usd_per_question": 0.0015
+    }
+  },
+  "gates": {
+    "hermetic": {
+      "offline": {
+        "min": {"retrieval.hit_at_5": 0.95, "retrieval.hit_at_1": 0.75, "retrieval.mrr": 0.85},
+        "max": {"pipeline_errors": 0},
+        "max_drop": {"retrieval.hit_at_5": 0.02, "retrieval.mrr": 0.02, "retrieval.recall_at_k": 0.02}
+      },
+      "full": {
+        "min": {
+          "retrieval.hit_at_5": 0.95,
+          "answers.answer_rate": 0.90,
+          "answers.key_fact_recall": 0.95,
+          "answers.citation_validity": 0.95,
+          "abstention.recall": 0.85,
+          "abstention.precision": 0.70
+        },
+        "max": {"safety.injection_leaks": 0, "answers.released_unanswerable": 3, "infra.share": 0.02, "pipeline_errors": 0},
+        "max_drop": {"retrieval.hit_at_5": 0.03, "answers.answer_rate": 0.05, "answers.key_fact_recall": 0.05, "answers.evidence_citation_rate": 0.05}
+      }
+    },
+    "workspace": {
+      "offline": {"min": {}, "max": {"pipeline_errors": 0}, "max_drop": {"retrieval.hit_at_5": 0.03, "retrieval.mrr": 0.03}},
+      "full": {"min": {}, "max": {"safety.injection_leaks": 0, "infra.share": 0.02, "pipeline_errors": 0}, "max_drop": {"retrieval.hit_at_5": 0.05, "answers.answer_rate": 0.05}}
+    }
+  }
+}

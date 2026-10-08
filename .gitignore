@@ -4,5 +4,14 @@ __pycache__/
 .env
 backend/vector_store/
 backend/chroma_store/
+backend/uploads/
+backend/workspace.db
+workspace.db
+backend/tei_model_cache/
 temp_*
 .vscode/
+
+# Eval run output (baselines in backend/eval/baselines are committed)
+backend/eval/reports/
+backend/eval/datasets/*.candidates.jsonl
+backend/secrets/

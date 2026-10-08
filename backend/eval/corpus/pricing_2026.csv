@@ -1,0 +1,6 @@
+sku,plan,monthly_price_usd,carts_included,support_tier,contract_minimum_months,extra_cart_usd_per_month
+TERN-START,Start,1450,2,Standard (business hours),12,690
+TERN-GROWTH,Growth,4900,8,Priority (business hours plus weekend email),12,590
+TERN-SCALE,Scale,11200,20,Premium (24/7 phone),24,520
+ADD-LIDAR-HD,High-density lidar upgrade,180,0,Same as base plan,12,180
+ADD-COLD,Cold-store kit (down to -20 C),260,0,Same as base plan,12,260
