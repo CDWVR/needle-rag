@@ -148,8 +148,15 @@ def transcribe(audio: bytes, claimed_seconds: float, language: str = "") -> str:
             actual = 0.0  # OpenRouter does not bill failed generations
             raise InfraError("The speech service is unavailable.", status_code=response.status_code, kind="upstream")
         if response.status_code != 200:
-            log.warning("speech request refused: HTTP %s", response.status_code)
             actual = 0.0
+            try:
+                reason = str((response.json().get("error") or {}).get("message") or "")[:300]
+            except (ValueError, AttributeError):
+                reason = ""
+            log.error("speech request refused: HTTP %s %s", response.status_code, reason)
+            if response.status_code in (401, 402, 403):
+                # A key problem is the owner's to fix (limit too low, key revoked); say so, not "bad recording".
+                raise InfraError("Voice input is unavailable right now.", status_code=response.status_code, kind="key")
             raise NeedleError("The speech service refused that recording.")
         payload = response.json()
         usage = payload.get("usage") or {}

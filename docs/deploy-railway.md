@@ -41,7 +41,8 @@ limit on the OpenRouter key (below).
    | `NEEDLE_DEMO_DAILY_QUESTIONS` | optional, default `300` |
 
    For the Voice button, add `OPENROUTER_STT_API_KEY`: a **second** OpenRouter key with its own
-   credit limit (say $0.30 for the month). Clips are capped at 15 seconds and the app stops
+   credit limit of **$1 or more**: OpenRouter rejects audio requests (HTTP 402) when the key has less
+   than $0.50 of limit left. The app's own daily cap is what keeps spending near a cent a day. Clips are capped at 15 seconds and the app stops
    transcribing once it has spent `STT_DAILY_USD` (default `0.01`) in a UTC day. Without the key the
    Voice button falls back to the main key, and it is hidden if there is no key at all.
 

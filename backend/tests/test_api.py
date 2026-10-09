@@ -226,6 +226,15 @@ class VoiceTests(unittest.TestCase):
             self.assertEqual(self.send().status_code, 502)
         self.assertEqual(self.transcribe.budget.spent(), 0.0)
 
+    def test_key_limit_problem_is_reported_as_unavailable_and_not_charged(self):
+        from unittest import mock
+
+        refused = mock.Mock(status_code=402, json=lambda: {"error": {"message": "requires at least $0.50"}})
+        with mock.patch.object(self.transcribe.httpx, "post", lambda *a, **k: refused):
+            response = self.send()
+        self.assertEqual((response.status_code, response.json()["detail"]), (502, "Voice input is unavailable right now."))
+        self.assertEqual(self.transcribe.budget.spent(), 0.0)
+
     def test_clients_are_rate_limited(self):
         statuses = [self.send().status_code for _ in range(6)]
         self.assertEqual(statuses[:4], [200] * 4)
