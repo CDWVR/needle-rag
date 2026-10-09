@@ -16,7 +16,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, HTTPException, Path, Query, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Path, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -38,7 +38,8 @@ from embedder import embedding_dimensions
 from jobs import IngestionQueue
 from paths import data_path
 from pipeline import PipelineOptions, run_pipeline
-from pipeline_logic import NeedleError
+import transcribe
+from pipeline_logic import InfraError, NeedleError
 from versions import PublishBlocked, refresh_active_index, rollback_index
 from workspace import WorkspaceStore
 
@@ -253,6 +254,8 @@ def read_session(request: Request):
         "role": role,
         "demo": security.DEMO_MODE,
         "auth_disabled": security.AUTH_DISABLED,
+        "voice": transcribe.enabled(),
+        "voice_max_seconds": transcribe.STT_MAX_SECONDS,
     }
 
 
@@ -525,6 +528,33 @@ def remove_document(document_id: str = Path(pattern=UUID)):
     workspace.forget_document(document_id)
     workspace.record_run("Deletion propagation", f"Removed {document_id}", "Success")
     return {"success": True, "found": found}
+
+
+# --- voice input --------------------------------------------------------------------------------
+
+@app.post("/api/transcribe")
+def transcribe_audio(
+    request: Request,
+    file: UploadFile = File(...),
+    seconds: float = Form(0),
+    language: str = Form(""),
+):
+    security.rate_limit(request, "voice")
+    security.rate_limit(request, "voice_hour")
+    if not transcribe.enabled():
+        raise HTTPException(status_code=503, detail="Voice input is not configured on this server.")
+    declared = int(request.headers.get("content-length") or 0)
+    if declared > transcribe.STT_MAX_BYTES * 2:
+        raise HTTPException(status_code=413, detail=f"Keep recordings under {transcribe.STT_MAX_SECONDS} seconds.")
+    audio = file.file.read(transcribe.STT_MAX_BYTES + 1)
+    try:
+        text = transcribe.transcribe(audio, seconds, language.strip()[:3])
+    except InfraError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except NeedleError as exc:
+        status = 429 if "limit" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return {"text": text}
 
 
 # --- chat ---------------------------------------------------------------------------------------

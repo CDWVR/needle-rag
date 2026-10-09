@@ -169,5 +169,72 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/jobs/1;drop", headers=BEARER).status_code, 422)
 
 
+class VoiceTests(unittest.TestCase):
+    """Speech-to-text is capped in dollars: no network, so the OpenRouter call is replaced."""
+
+    WEBM = b"\x1a\x45\xdf\xa3" + b"\x00" * 500
+
+    def setUp(self):
+        from unittest import mock
+
+        import transcribe
+
+        self.transcribe = transcribe
+        self.client = TestClient(main.app)
+        main.security.limiter._hits.clear()
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.dict(os.environ, {"OPENROUTER_STT_API_KEY": "test-key"}).start()
+        mock.patch.object(transcribe, "budget", transcribe.DailyBudget(os.path.join(tempfile.mkdtemp(dir=DATA_DIR), "spend.json"))).start()
+        self.calls = []
+
+        def fake_post(url, **kwargs):
+            self.calls.append(kwargs["json"])
+            return mock.Mock(status_code=200, json=lambda: {"text": " hello  world ", "usage": {"seconds": 3, "cost": 0.0002}})
+
+        mock.patch.object(transcribe.httpx, "post", fake_post).start()
+
+    def send(self, data=None, seconds="3", **extra):
+        files = {"file": ("voice", self.WEBM if data is None else data)}
+        return self.client.post("/api/transcribe", headers=BEARER, files=files, data={"seconds": seconds, **extra})
+
+    def test_transcribes_and_bills_the_real_cost(self):
+        response = self.send()
+        self.assertEqual(response.json(), {"text": "hello world"})
+        self.assertEqual(self.calls[0]["input_audio"]["format"], "webm")
+        self.assertEqual(self.calls[0]["model"], "openai/whisper-large-v3-turbo")
+        self.assertAlmostEqual(self.transcribe.budget.spent(), 0.0002, places=6)
+
+    def test_bad_audio_is_refused_before_any_spend(self):
+        self.assertEqual(self.send(b"not audio at all").status_code, 400)
+        self.assertEqual(self.send(b"").status_code, 400)
+        self.assertEqual(self.send(self.WEBM + b"\x00" * self.transcribe.STT_MAX_BYTES).status_code, 400)
+        self.assertEqual((self.calls, self.transcribe.budget.spent()), ([], 0.0))
+
+    def test_daily_cap_stops_spending(self):
+        with unittest.mock.patch.object(self.transcribe, "STT_DAILY_USD", 0.0003):
+            self.assertEqual(self.send().status_code, 200)
+            main.security.limiter._hits.clear()
+            refused = self.send()
+        self.assertEqual(refused.status_code, 429)
+        self.assertIn("limit", refused.json()["detail"])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_upstream_failure_is_not_charged(self):
+        from unittest import mock
+
+        with mock.patch.object(self.transcribe.httpx, "post", lambda *a, **k: mock.Mock(status_code=502)):
+            self.assertEqual(self.send().status_code, 502)
+        self.assertEqual(self.transcribe.budget.spent(), 0.0)
+
+    def test_clients_are_rate_limited(self):
+        statuses = [self.send().status_code for _ in range(6)]
+        self.assertEqual(statuses[:4], [200] * 4)
+        self.assertEqual(statuses[4:], [429, 429])
+
+    def test_session_reports_voice_availability(self):
+        session = self.client.get("/api/auth/session", headers=BEARER).json()
+        self.assertEqual((session["voice"], session["voice_max_seconds"]), (True, 15))
+
+
 if __name__ == "__main__":
     unittest.main()

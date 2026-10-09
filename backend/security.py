@@ -45,7 +45,7 @@ PUBLIC_PATHS = {"/", "/health", "/api/auth/login", "/api/auth/logout", "/api/aut
 VISITOR_ROUTES = {
     ("GET", "/api/settings"), ("GET", "/api/conversations"), ("POST", "/api/conversations"),
     ("GET", "/api/documents"), ("GET", "/api/index"), ("GET", "/api/index/versions"), ("GET", "/api/eval/latest"),
-    ("GET", "/api/analytics"), ("POST", "/api/chat"),
+    ("GET", "/api/analytics"), ("POST", "/api/chat"), ("POST", "/api/transcribe"),
 }
 VISITOR_PREFIXES = (("GET", "/api/conversations/"), ("GET", "/api/documents/"), ("POST", "/api/messages/"))
 PUBLIC_PREFIXES = ("/static/",)
@@ -242,6 +242,8 @@ RATE_LIMITS = {
     "chat": (30, 60),
     "visitor_chat": (6, 60),        # public demo: a few questions a minute...
     "visitor_chat_hour": (40, 3600),  # ...and a bounded number per hour, per client
+    "voice": (4, 60),                # speech-to-text costs money per second of audio
+    "voice_hour": (20, 3600),
     "upload": (12, 60),
     "refresh": (3, 300),
     "write": (120, 60),

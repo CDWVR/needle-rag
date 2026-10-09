@@ -46,6 +46,7 @@ _cost_ledger: Dict[str, float] = {
     "checker": 0.0,
     "rewriter": 0.0,
     "golden_build": 0.0,
+    "stt": 0.0,
     "other": 0.0,
 }
 

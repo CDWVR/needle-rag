@@ -61,6 +61,12 @@ class VisitorTests(unittest.TestCase):
             response = getattr(client, method)(path, headers=WRITE, **kwargs)
             self.assertEqual(response.status_code, 403, f"{method} {path}")
 
+    def test_voice_route_is_open_to_visitors_but_off_without_a_key(self):
+        client = visitor()
+        files = {"file": ("voice", b"\x1a\x45\xdf\xa3" + b"\x00" * 50)}
+        self.assertEqual(client.post("/api/transcribe", headers=WRITE, files=files).status_code, 503)
+        self.assertFalse(client.get("/api/auth/session").json()["voice"])
+
     def test_visitor_writes_still_need_the_csrf_header(self):
         self.assertEqual(visitor().post("/api/conversations").status_code, 403)
 
