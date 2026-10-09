@@ -23,7 +23,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app/backend
-VOLUME ["/data"]
+# No VOLUME instruction: Railway rejects it. Attach a Railway volume at /data instead (see docs/deploy-railway.md).
 EXPOSE 8000
 ENTRYPOINT ["docker-entrypoint.sh"]
 # --proxy-headers: rate limits must key on the real client, not the platform's proxy.
