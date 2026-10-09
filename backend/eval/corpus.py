@@ -55,11 +55,11 @@ def corpus_fingerprint() -> str:
     digest = hashlib.sha256()
     for name, payload in corpus_files():
         digest.update(name.encode())
-        digest.update(hashlib.sha256(_stable(name, payload).replace(b"\r\n", b"\n")).digest())
+        digest.update(hashlib.sha256(stable_payload(name, payload).replace(b"\r\n", b"\n")).digest())
     return digest.hexdigest()[:16]
 
 
-def _stable(name: str, payload: bytes) -> bytes:
+def stable_payload(name: str, payload: bytes) -> bytes:
     # Rendered PDFs embed object ids that can differ between PyMuPDF builds; fingerprint the source instead.
     if name.endswith(".pdf"):
         with open(os.path.join(CORPUS_DIR, name + ".txt"), "rb") as handle:

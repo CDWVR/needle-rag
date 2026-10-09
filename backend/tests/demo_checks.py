@@ -110,6 +110,17 @@ class VisitorTests(unittest.TestCase):
         self.assertEqual(statuses[6:], [429, 429])
 
 
+class SeedTests(unittest.TestCase):
+    def test_reseeding_neither_duplicates_nor_keeps_old_copies(self):
+        import demo
+
+        self.assertGreater(demo.seed_demo_corpus(main.workspace), 0)
+        self.assertEqual(demo.seed_demo_corpus(main.workspace), 0)  # a restart adds nothing, even for the rendered PDF
+        names = [doc["name"] for doc in main.get_all_documents()]
+        self.assertEqual(names.count("employee_handbook.pdf"), 1)
+        self.assertEqual(len(names), len(set(names)))
+
+
 class OwnerTests(unittest.TestCase):
     def test_owner_signs_in_and_changes_settings(self):
         client = TestClient(main.app)
