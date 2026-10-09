@@ -167,7 +167,8 @@ def transcribe(audio: bytes, claimed_seconds: float, language: str = "") -> str:
         if billed is None:
             billed = float(usage.get("seconds") or claimed_seconds or 0) * STT_RESERVE_PER_SECOND
         actual = max(0.0, billed)
-        return " ".join(str(payload.get("text") or "").split())[:1000]
+        text = " ".join(str(payload.get("text") or "").split())[:1000]
+        return text if any(char.isalnum() for char in text) else ""  # silence comes back as "." or "..."
     finally:
         budget.settle(reserved, actual)
         record_cost("stt", actual)
