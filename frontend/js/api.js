@@ -76,6 +76,16 @@ export const api = {
   reset: () => json("/api/workspace/reset", { method: "POST", body: JSON.stringify({ confirm: "DELETE" }) }),
   chat: (body) =>
     request("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  transcribe: async (blob, seconds) => {
+    const body = new FormData();
+    body.append("file", blob, "voice");
+    body.append("seconds", String(Math.round(seconds * 10) / 10));
+    body.append("language", (navigator.language || "").split("-")[0]);
+    const response = await request("/api/transcribe", { method: "POST", body });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ApiError(errorMessage(data, "Voice input failed"), response.status, data?.detail);
+    return data;
+  },
   upload: async (file) => {
     const body = new FormData();
     body.append("file", file);

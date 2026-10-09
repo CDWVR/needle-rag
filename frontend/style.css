@@ -561,6 +561,8 @@ button.mark { border: 0; padding: 0; cursor: pointer; }
 .readonly [data-owner] { display: none !important; }
 .demo-badge { font: 500 10px 'DM Mono', monospace; letter-spacing: .08em; padding: 7px 10px; border-radius: 999px; background: var(--acid); color: var(--ink); }
 .demo-badge[hidden] { display: none; }
+.tool-button[hidden] { display: none; }
+.tool-button:disabled { opacity: .5; cursor: progress; }
 .sample-questions { display: grid; gap: 8px; margin-top: 22px; }
 .sample-question { text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--white); font-size: 13px; line-height: 1.45; }
 .sample-question:hover { border-color: #a8c62d; background: var(--acid-soft); }

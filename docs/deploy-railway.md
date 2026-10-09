@@ -40,6 +40,11 @@ limit on the OpenRouter key (below).
    | `NEEDLE_COOKIE_SECURE` | `true` |
    | `NEEDLE_DEMO_DAILY_QUESTIONS` | optional, default `300` |
 
+   For the Voice button, add `OPENROUTER_STT_API_KEY`: a **second** OpenRouter key with its own
+   credit limit (say $0.30 for the month). Clips are capped at 15 seconds and the app stops
+   transcribing once it has spent `STT_DAILY_USD` (default `0.01`) in a UTC day. Without the key the
+   Voice button falls back to the main key, and it is hidden if there is no key at all.
+
    `NEEDLE_SESSION_SECRET` is generated on first start and kept on the volume. The public domain
    and Railway's health checker are allowed automatically.
 4. **Generate a domain** under Settings, Networking. Open it: the sample documents index in the

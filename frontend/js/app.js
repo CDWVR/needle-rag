@@ -1563,7 +1563,13 @@ function chooseFile(mode, documentId = null) {
   input.click();
 }
 
-let recognition = null;
+let recorder = null;
+let recordTimer = null;
+
+function stopRecording() {
+  if (recorder && recorder.state !== "inactive") recorder.stop();
+}
+
 let threadSearchSeq = 0;
 
 listen($("#askForm"), "submit", (event) => {
@@ -1625,52 +1631,62 @@ listen($("#addContext"), "click", () => {
   if (menu.hidden) renderContextMenu();
   menu.hidden = !menu.hidden;
 });
-listen($("#voiceButton"), "click", () => {
-  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Speech) {
+listen($("#voiceButton"), "click", async () => {
+  if (recorder) {
+    stopRecording();
+    return;
+  }
+  if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
     notify("Voice input is not available in this browser.");
     return;
   }
-  if (recognition) {
-    recognition.stop();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    notify("Microphone access was blocked.");
     return;
   }
-  const session = new Speech();
-  recognition = session;
-  session.lang = navigator.language || "en-US";
-  session.onresult = (event) => {
-    const text = event.results?.[0]?.[0]?.transcript || "";
-    if (!text) {
+  const chunks = [];
+  const startedAt = Date.now();
+  const active = new MediaRecorder(stream, { audioBitsPerSecond: 24000 });
+  recorder = active;
+  active.ondataavailable = (event) => {
+    if (event.data.size) chunks.push(event.data);
+  };
+  active.onstop = async () => {
+    clearTimeout(recordTimer);
+    stream.getTracks().forEach((track) => track.stop());
+    if (recorder === active) recorder = null;
+    $("#voiceButton").setAttribute("aria-pressed", "false");
+    const seconds = (Date.now() - startedAt) / 1000;
+    if (!chunks.length || seconds < 0.5) {
       notify("No speech was heard.");
       return;
     }
-    const input = $("#askInput");
-    input.value = text;
-    input.dispatchEvent(new Event("input"));
+    $("#voiceButton").disabled = true;
+    notify("Transcribing…");
+    try {
+      const { text } = await api.transcribe(new Blob(chunks, { type: active.mimeType }), seconds);
+      if (!text) {
+        notify("No speech was heard.");
+        return;
+      }
+      const input = $("#askInput");
+      input.value = text;
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+    } catch (err) {
+      notify(err.message || "Voice input failed.");
+    } finally {
+      $("#voiceButton").disabled = false;
+    }
   };
-  session.onerror = (event) => {
-    const code = event.error || "";
-    const messages = {
-      "not-allowed": "Microphone access was blocked.",
-      "service-not-allowed": "Voice input is not available in this browser.",
-      network: "Voice input could not reach the speech service.",
-      "no-speech": "No speech was heard.",
-    };
-    if (code && code !== "aborted") notify(messages[code] || "Voice input stopped.");
-  };
-  session.onend = () => {
-    if (recognition === session) recognition = null;
-    $("#voiceButton").setAttribute("aria-pressed", "false");
-  };
-  try {
-    session.start();
-    $("#voiceButton").setAttribute("aria-pressed", "true");
-    notify("Listening…");
-  } catch (err) {
-    recognition = null;
-    $("#voiceButton").setAttribute("aria-pressed", "false");
-    notify(err.message || "Voice input is not available in this browser.");
-  }
+  active.start();
+  $("#voiceButton").setAttribute("aria-pressed", "true");
+  notify(`Listening… click again to stop (up to ${state.voiceSeconds} seconds).`);
+  // The server also refuses long clips; stopping here keeps the cost of one recording bounded.
+  recordTimer = setTimeout(stopRecording, state.voiceSeconds * 1000);
 });
 listen($("#fileInput"), "change", async (event) => {
   const file = event.target.files?.[0];
@@ -1750,6 +1766,8 @@ $("#voiceButton").setAttribute("aria-pressed", "false");
 function applyRole(session) {
   state.role = session.role || "owner";
   state.demo = Boolean(session.demo);
+  state.voiceSeconds = session.voice_max_seconds || 15;
+  $("#voiceButton").hidden = !session.voice;
   const visitor = state.role === "visitor";
   $("#app").classList.toggle("readonly", visitor);
   $("#demoBadge").hidden = !state.demo;
