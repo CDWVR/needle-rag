@@ -96,6 +96,8 @@ def validate_row(row: Dict[str, Any]) -> List[str]:
             errors.append("expected must not reference database or Chroma ids")
         if not (item.get("document") or item.get("content_hash")):
             errors.append("expected item needs a document name or content_hash")
+        if "page" in item and not (isinstance(item["page"], int) and item["page"] >= 1):
+            errors.append("expected page must be a positive integer")
     if row.get("answerable") is True:
         if not expected:
             errors.append("answerable rows need at least one expected passage")
@@ -105,8 +107,6 @@ def validate_row(row: Dict[str, Any]) -> List[str]:
             errors.append("type unanswerable requires answerable=false")
     if row.get("answerable") is False and qtype != "unanswerable":
         errors.append("answerable=false requires type unanswerable")
-        if isinstance(item, dict) and "page" in item and not (isinstance(item["page"], int) and item["page"] >= 1):
-            errors.append("expected page must be a positive integer")
     for field in ("key_facts", "tags", "forbidden_phrases"):
         value = row.get(field)
         if value is not None and (not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value)):

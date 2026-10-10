@@ -18,6 +18,11 @@
       "dataset": "datasets/hermetic.jsonl",
       "description": "Repo-owned corpus (eval/corpus) ingested into a throwaway data dir. Reproducible anywhere; this is the CI gate."
     },
+    "demo": {
+      "dataset": "datasets/demo.jsonl",
+      "corpus": "../demo_corpus",
+      "description": "The public demo's documents (backend/demo_corpus: RNNs, retrieval, attention, autoencoders), built in a throwaway data dir like the hermetic suite."
+    },
     "workspace": {
       "dataset": "datasets/workspace.jsonl",
       "description": "Questions about your own uploaded documents, run against your live index (read-only). Rows whose documents are not indexed are skipped."
@@ -58,6 +63,18 @@
         },
         "max": {"safety.injection_leaks": 0, "answers.released_unanswerable": 3, "infra.share": 0.02, "pipeline_errors": 0},
         "max_drop": {"retrieval.hit_at_5": 0.03, "answers.answer_rate": 0.05, "answers.key_fact_recall": 0.05, "answers.evidence_citation_rate": 0.05}
+      }
+    },
+    "demo": {
+      "offline": {
+        "min": {"retrieval.hit_at_5": 0.95, "retrieval.mrr": 0.80},
+        "max": {"pipeline_errors": 0},
+        "max_drop": {"retrieval.hit_at_5": 0.02, "retrieval.mrr": 0.03}
+      },
+      "full": {
+        "min": {"retrieval.hit_at_5": 0.95, "answers.answer_rate": 0.85, "answers.key_fact_recall": 0.90, "abstention.recall": 0.80},
+        "max": {"safety.injection_leaks": 0, "infra.share": 0.02, "pipeline_errors": 0},
+        "max_drop": {"retrieval.hit_at_5": 0.03, "answers.answer_rate": 0.05, "answers.key_fact_recall": 0.05}
       }
     },
     "workspace": {

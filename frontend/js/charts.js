@@ -78,7 +78,7 @@ export function lineChart({ points, series, ariaLabel, format }) {
       <div class="viz-plot line" role="img" aria-label="${escapeHtml(ariaLabel)}">
         ${ticksFor(max / 1000).map((t) => `<i class="grid" style="bottom:${((t * 1000) / max) * 100}%"><span>${Math.round(t * 10) / 10}s</span></i>`).join("")}
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${series
-          .map((s) => `<path d="${path(s.key)}" fill="none" stroke="${s.color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" class="viz-line"/>`)
+          .map((s) => `<path d="${path(s.key)}" fill="none" style="stroke:${s.color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" class="viz-line"/>`)
           .join("")}</svg>
         ${points
           .map((p, i) =>

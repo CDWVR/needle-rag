@@ -21,7 +21,7 @@
 - **🆓 Unlimited Free Embeddings** — Swapped out cloud embeddings for local, highly-optimized `all-MiniLM-L6-v2` running via ONNX Runtime for zero rate limits and maximum privacy.
 - **🚀 Non-blocking Ingestion** — Uploads are parsed and embedded on a worker thread, so a 400-page textbook does not stall chat or other requests.
 - **🧪 Production eval** — A repo-owned test corpus and golden set run through the exact production pipeline, gated in CI. See [Evaluation](#-evaluation).
-- **🎨 Workspace UI** — Ask, knowledge base, document detail, pipeline, analytics, and settings views with retrieval traces and source inspection.
+- **🎨 Workspace UI** — Ask, knowledge base, document detail, pipeline, analytics, and settings views with retrieval traces and source inspection. Light and dark themes (System / Light / Dark in the account menu or the Ctrl K command menu), page transitions, and motion that respects the reduced-motion setting.
 
 ---
 
@@ -196,6 +196,7 @@ python -m eval run --suite hermetic --tier full --max-cost 0.50
 
 **Suites**
 - `hermetic` — `eval/corpus/` holds eleven documents about a fictional company (Markdown, text, CSV, and a PDF rendered at run time so page citations are tested), including two conflicting policy versions and a passage carrying an injected instruction. `eval/datasets/hermetic.jsonl` has 117 questions: factual, exact-code, multi-hop, follow-up, near-miss unanswerable, off-topic, and injection cases. Every run ingests the corpus through the real upload code into a throwaway data directory, so it never touches your workspace.
+- `demo` — the public demo's four documents in `backend/demo_corpus/` (RNN and retrieval notes, plus two lecture decks on attention and autoencoders, included for educational purposes). `eval/datasets/demo.jsonl` has 65 questions, including the sample questions shown on the demo's home screen, built the same way as `hermetic`. CI runs its offline tier too.
 - `workspace` — `eval/datasets/workspace.jsonl` asks about your own documents and runs read-only against your live index. Rows whose documents are not indexed are skipped. Grow it with `python -m eval draft` then `python -m eval review`.
 
 **Tiers**

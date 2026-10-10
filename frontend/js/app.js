@@ -426,6 +426,56 @@ function countUp(root) {
   });
 }
 
+// The newest answer appears word by word. The server releases an answer only after the grounding
+// check, so this is a reveal, not a stream: about 1.5 s whatever the length, citations popping in as
+// the words reach them, code and tables fading in whole. Returns the reveal's length in ms.
+function revealWords(turn) {
+  const answer = turn && $(".answer", turn);
+  if (!answer || reducedMotion()) return 0;
+  const items = [];
+  const walk = (node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (child.nodeValue.trim()) items.push(child);
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.matches(".citation, pre, table, .math, svg, img")) items.push(child);
+        else walk(child);
+      }
+    }
+  };
+  walk(answer);
+  const units = items.reduce((sum, item) => sum + (item.nodeType === Node.TEXT_NODE ? item.nodeValue.split(/\s+/).filter(Boolean).length : 1), 0);
+  if (!units) return 0;
+  const step = Math.min(30, Math.max(6, 1500 / units));
+  let index = 0;
+  const delay = () => `${Math.round(120 + step * index++)}ms`;
+  for (const item of items) {
+    if (item.nodeType === Node.ELEMENT_NODE) {
+      item.classList.add(item.matches(".citation") ? "w-cite" : "w-block");
+      item.style.setProperty("--d", delay());
+      continue;
+    }
+    const fragment = document.createDocumentFragment();
+    for (const part of item.nodeValue.split(/(\s+)/)) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) {
+        fragment.append(part);
+        continue;
+      }
+      const word = document.createElement("span");
+      word.className = "w";
+      word.style.setProperty("--d", delay());
+      word.textContent = part;
+      fragment.append(word);
+    }
+    item.replaceWith(fragment);
+  }
+  answer.classList.add("words");
+  const total = Math.round(120 + step * index);
+  $$(".callout, .answer-actions", turn).forEach((node) => (node.style.animationDelay = `${total}ms`));
+  return total;
+}
+
 // The Needle mark assembling and folding in a loop: the loading symbol everywhere something waits.
 const loader = (size = "") => `<span class="needle-loader ${size}" aria-hidden="true">${LOGO_SVG}</span>`;
 
@@ -655,6 +705,7 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
     state.draftDirty = false;
     state.form = { ...(state.settings || {}) };
   }
+  const previous = state.page;
   state.page = page;
   if (updateHash) {
     const hash =
@@ -663,6 +714,19 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
         : `#${page}`;
     if (location.hash !== hash) history.pushState(null, "", hash);
   }
+  // A real page change lifts the old view away and settles the new one in; the rail and top bar stay put.
+  if (previous !== page && document.startViewTransition && !reducedMotion() && document.visibilityState === "visible" && !$("#bootSplash")) {
+    const root = document.documentElement;
+    root.classList.add("page-switching");
+    const transition = document.startViewTransition(() => applyPage(page));
+    transition.finished.finally(() => root.classList.remove("page-switching"));
+    await transition.updateCallbackDone.catch(() => applyPage(page));
+    return;
+  }
+  applyPage(page);
+}
+
+function applyPage(page) {
   $("#app").classList.toggle("subpage", page !== "ask");
   $$(".workspace-page").forEach((view) => view.classList.toggle("active", view.dataset.view === page));
   $$(".rail [data-page]").forEach((button) => {
@@ -1147,9 +1211,10 @@ function renderConversation() {
   setTitle(activeConversationTitle());
   if (state.revealTurn != null) {
     const reveal = state.revealTurn;
+    const duration = revealWords($(`#turn-${reveal}`));
     setTimeout(() => {
       if (state.revealTurn === reveal) state.revealTurn = null;
-    }, 1600);
+    }, Math.max(1600, duration + 600));
   }
   if (!pending && turns.length > 1 && "IntersectionObserver" in window) {
     // The evidence panel follows the turn being read.
@@ -1891,6 +1956,7 @@ async function runUpload(item) {
         notify(`${item.name} was indexed, but the previous version could not be removed. ${err.message}`, { type: "error" });
       }
     }
+    const first = !item.replaceId && !state.documents.some((doc) => doc.status === "indexed" && doc.id !== job.document_id);
     paintUploads();
     await refreshShell();
     if (state.page === "knowledge") await renderKnowledge();
@@ -1898,6 +1964,15 @@ async function runUpload(item) {
       state.activeDocumentId = job.document_id;
       state.focusPassage = null;
       showPage("document");
+    }
+    if (first && !item.forQuestion) {
+      celebrateFirstDocument(item.name);
+      return;
+    }
+    const panel = $("#uploadPanel");
+    if (panel && !panel.hidden && panel.offsetParent) {
+      const box = panel.getBoundingClientRect();
+      burst(box.left + 48, box.top + 40, 16);
     }
     notify(`${item.name} is ready to search`, {
       type: "success",
@@ -1911,6 +1986,56 @@ async function runUpload(item) {
     paintUploads();
     notify(`${item.name}: ${err.message}`, { type: "error" });
   }
+}
+
+// A burst of needle-shaped shards from a point on screen. Paths are fixed by index, not random.
+function burst(x, y, count = 24) {
+  if (reducedMotion()) return;
+  const colors = ["#d8ff3e", "#b9e03a", "var(--ink)", "#2546e8"];
+  const node = document.createElement("div");
+  node.className = "burst";
+  node.setAttribute("aria-hidden", "true");
+  node.style.left = `${x}px`;
+  node.style.top = `${y}px`;
+  node.innerHTML = Array.from({ length: count }, (_, i) => {
+    const angle = (i / count) * Math.PI * 2 + (i % 3) * 0.35;
+    const distance = 80 + ((i * 37) % 80);
+    const spin = (i % 2 ? 1 : -1) * (120 + ((i * 29) % 160));
+    return `<i style="--x:${(Math.cos(angle) * distance).toFixed(1)}px;--y:${(Math.sin(angle) * distance - 24).toFixed(1)}px;--r:${(i * 47) % 180}deg;--spin:${spin}deg;--delay:${(i % 5) * 18}ms;--c:${colors[i % colors.length]}"></i>`;
+  }).join("");
+  document.body.append(node);
+  setTimeout(() => node.remove(), 1500);
+}
+
+// The first document in a workspace is a milestone: a burst and a card that leads to the first question.
+function celebrateFirstDocument(name) {
+  burst(window.innerWidth / 2, Math.min(window.innerHeight * 0.3, 260), 36);
+  $(".celebrate-card")?.remove();
+  const card = document.createElement("div");
+  card.className = "celebrate-card";
+  card.setAttribute("role", "status");
+  card.innerHTML = `
+    <div class="logo-build">${LOGO_SVG}</div>
+    <h3>Your knowledge base is live</h3>
+    <p>${escapeHtml(name)} is indexed. Ask a question, and every answer will point back to the passage it came from.</p>
+    <div class="actions"><button type="button" class="btn" data-act="later">Later</button><button type="button" class="btn primary" data-act="ask">Ask a question</button></div>`;
+  document.body.append(card);
+  let timer = null;
+  const close = () => {
+    clearTimeout(timer);
+    if (!card.isConnected || card.classList.contains("leaving")) return;
+    card.classList.add("leaving");
+    setTimeout(() => card.remove(), reducedMotion() ? 0 : 260);
+  };
+  $('[data-act="later"]', card).addEventListener("click", close);
+  card.addEventListener("keydown", (event) => event.key === "Escape" && close());
+  $('[data-act="ask"]', card).addEventListener("click", async () => {
+    close();
+    await showPage("ask");
+    $("#askInput")?.focus();
+  });
+  $('[data-act="ask"]', card).focus();
+  timer = setTimeout(close, 15000);
 }
 
 function paintUploads() {
@@ -2787,8 +2912,8 @@ async function renderAnalytics() {
           <div class="viz-body">${lineChart({
             points: (report.latency_series || []).map((p) => ({ ...p, label: shortDay(p.day) })),
             series: [
-              { key: "p50_ms", label: "Median", color: "#2a78d6" },
-              { key: "p95_ms", label: "Slowest 5%", color: "#eb6834" },
+              { key: "p50_ms", label: "Median", color: "var(--viz-1)" },
+              { key: "p95_ms", label: "Slowest 5%", color: "var(--viz-2)" },
             ],
             ariaLabel: "Daily median and 95th percentile response time",
             format: (ms) => (ms == null ? "—" : seconds(ms)),
@@ -3165,6 +3290,10 @@ function buildPaletteItems() {
   if (isOwner()) items.push({ group: "Pages", label: "Settings", run: () => showPage("settings") });
   items.push({ group: "Actions", label: "New conversation", run: () => startNewConversation() });
   if (isOwner()) items.push({ group: "Actions", label: "Upload files", run: () => chooseFile("upload") });
+  const theme = window.needleTheme?.get() || "system";
+  THEMES.filter(([value]) => value !== theme).forEach(([value, label]) =>
+    items.push({ group: "Appearance", label: value === "system" ? "Match the system theme" : `Switch to ${label.toLowerCase()} theme`, run: () => setTheme(value) })
+  );
   state.documents
     .filter((doc) => doc.status === "indexed")
     .forEach((doc) => items.push({ group: "Documents", label: docTitle(doc.name), hint: doc.name, run: () => openDocument(doc.id) }));
@@ -3264,6 +3393,42 @@ $("#palette").addEventListener("click", (event) => {
 // Account, sign-in, sign-out
 // ---------------------------------------------------------------------------------------
 
+// Theme: system, light or dark (js/theme.js applies and remembers it). Where the browser supports
+// view transitions, the new palette spreads out in a circle from the control that changed it.
+const THEMES = [
+  ["system", "System"],
+  ["light", "Light"],
+  ["dark", "Dark"],
+];
+
+function syncThemeControls() {
+  const pref = window.needleTheme?.get() || "system";
+  $$("button[data-theme-pref]").forEach((button) => {
+    const on = button.dataset.themePref === pref;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", String(on));
+  });
+}
+
+function setTheme(pref, origin = null) {
+  const theme = window.needleTheme;
+  if (!theme || theme.get() === pref) return;
+  const apply = () => {
+    theme.set(pref);
+    syncThemeControls();
+  };
+  if (!document.startViewTransition || reducedMotion()) {
+    apply();
+    return;
+  }
+  const root = document.documentElement;
+  const box = origin?.getBoundingClientRect();
+  root.style.setProperty("--tx", box ? `${box.left + box.width / 2}px` : "50%");
+  root.style.setProperty("--ty", box ? `${box.top + box.height / 2}px` : "0px");
+  root.classList.add("theme-switching");
+  document.startViewTransition(apply).finished.finally(() => root.classList.remove("theme-switching"));
+}
+
 function accountMenu() {
   const anchor = $("#avatar");
   const settings = state.settings || {};
@@ -3278,6 +3443,20 @@ function accountMenu() {
     head.className = "menu-head";
     head.innerHTML = `<strong>${escapeHtml(settings.profile_name || "Operator")}</strong><span>${escapeHtml(state.role === "visitor" ? "Visitor · public demo" : settings.workspace_name || "Needle")}</span>`;
     menu.prepend(head);
+    const themeRow = document.createElement("div");
+    themeRow.className = "menu-theme";
+    themeRow.innerHTML = `<span id="themeLabel">Appearance</span><div class="segmented" id="themeSwitch" role="group" aria-labelledby="themeLabel">${THEMES.map(
+      ([value, label]) => `<button type="button" data-theme-pref="${value}">${label}</button>`
+    ).join("")}</div>`;
+    head.after(themeRow);
+    syncThemeControls();
+    $$("button", themeRow).forEach((button) =>
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setTheme(button.dataset.themePref, button);
+      })
+    );
+    initSegmented($("#themeSwitch"));
   }
 }
 

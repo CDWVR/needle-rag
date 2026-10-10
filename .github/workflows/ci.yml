@@ -58,6 +58,11 @@ jobs:
         env:
           OPENROUTER_API_KEY: ""
         run: python -m eval run --suite hermetic --tier offline --out-dir "$RUNNER_TEMP/eval"
+      - name: Offline eval on the public demo's documents
+        working-directory: backend
+        env:
+          OPENROUTER_API_KEY: ""
+        run: python -m eval run --suite demo --tier offline --out-dir "$RUNNER_TEMP/eval"
       - name: Upload eval report
         if: always()
         uses: actions/upload-artifact@v4
