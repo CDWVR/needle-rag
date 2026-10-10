@@ -241,6 +241,133 @@ def select_parents(scored_children: List[Dict[str, Any]], limit: int) -> List[Di
     return ordered[:limit]
 
 
+# --- near-duplicate passages ------------------------------------------------------------
+# Slide decks repeat a slide as each bullet appears, reports repeat boilerplate, exports repeat
+# headers. A passage whose words are almost all inside a fuller passage of the same document adds
+# nothing but takes a ranking slot. Containment (not similarity) is the test, so a short passage
+# inside a long one counts, while two passages that merely share a topic do not.
+
+SHINGLE_SIZE = 5
+CONTAINMENT_THRESHOLD = 0.9
+
+
+def shingles(text: str, size: int = SHINGLE_SIZE) -> frozenset:
+    """Word n-grams of a passage; a passage shorter than `size` words is one shingle of all its words."""
+    words = tokenize(text)
+    if len(words) < size:
+        return frozenset([tuple(words)]) if words else frozenset()
+    return frozenset(tuple(words[i:i + size]) for i in range(len(words) - size + 1))
+
+
+def containment(inner: frozenset, outer: frozenset) -> float:
+    """Share of `inner`'s shingles that also appear in `outer`."""
+    if not inner:
+        return 1.0
+    return len(inner & outer) / len(inner)
+
+
+def passage_hosts(texts: List[str], threshold: float = CONTAINMENT_THRESHOLD) -> Dict[int, int]:
+    """{index: host index} for passages that are near-contained in a fuller passage of the same list.
+
+    The host is the fullest passage that contains it, followed to the end of a chain (each slide of
+    a build-up sequence points at the last, complete one). Of near-identical passages the first is
+    the host. Passages that are nobody's copy are absent. An inverted index over shingles keeps this
+    close to linear for books, where few passages share shingles.
+    """
+    sets = [shingles(text) for text in texts]
+    words = [set(tokenize(text)) for text in texts]
+    postings: Dict[tuple, List[int]] = {}
+    for index, items in enumerate(sets):
+        for item in items:
+            postings.setdefault(item, []).append(index)
+    hosts: Dict[int, int] = {}
+    for index, items in enumerate(sets):
+        if not items:
+            continue
+        candidates: List[int] = []
+        if len(next(iter(items))) < SHINGLE_SIZE:
+            # Too short for a shingle ("Autoencoders", "Introduction [1]"): contained when all its words
+            # appear in another passage. Of identical short passages the first is kept.
+            candidates = [other for other in range(len(texts))
+                          if other != index and sets[other] and words[index] <= words[other]
+                          and (words[index] != words[other] or other < index)]
+        else:
+            shared: Dict[int, int] = {}
+            for item in items:
+                for other in postings[item]:
+                    if other != index:
+                        shared[other] = shared.get(other, 0) + 1
+            for other, count in shared.items():
+                if count / len(items) < threshold:
+                    continue
+                # Inside `other`. If `other` is also inside this one they are near-twins: the first is kept.
+                mutual = containment(sets[other], items) >= threshold
+                if not mutual or other < index:
+                    candidates.append(other)
+        if candidates:
+            hosts[index] = max(candidates, key=lambda other: (len(sets[other]), -other))
+    # Follow chains to a passage that is nobody's copy.
+    for index in list(hosts):
+        seen = {index}
+        host = hosts[index]
+        while host in hosts and hosts[host] not in seen:
+            seen.add(host)
+            host = hosts[host]
+        hosts[index] = host if host not in hosts else max(seen, key=lambda item: (len(sets[item]), -item))
+    # A host is never itself a copy (guards against a containment cycle).
+    for root in set(hosts.values()) & set(hosts):
+        hosts.pop(root, None)
+    return {index: host for index, host in hosts.items() if host != index}
+
+
+def redundant_passages(texts: List[str], threshold: float = CONTAINMENT_THRESHOLD) -> List[int]:
+    """Indexes of passages that repeat a fuller passage of the same list (see passage_hosts)."""
+    return sorted(passage_hosts(texts, threshold))
+
+
+def collapse_redundant_candidates(candidates: List[Dict[str, Any]], threshold: float = CONTAINMENT_THRESHOLD) -> List[Dict[str, Any]]:
+    """Give near-duplicate passages of one document a single slot in a ranked candidate list.
+
+    Walking in rank order: a candidate whose passage is near-contained in an earlier one is folded
+    into it; one that contains an earlier passage (the fuller version) lends that slot its passage.
+    The slot keeps its own (better) rank. Scores are not added: that would let boilerplate repeated
+    across a document outrank a passage said once. Different documents are never merged, so two
+    versions of a policy stay apart.
+    """
+    kept: List[Dict[str, Any]] = []
+    cache: Dict[str, frozenset] = {}
+
+    def passage(item: Dict[str, Any]) -> frozenset:
+        # Only the whole passage counts; a search unit alone says nothing about its passage.
+        key = f"{item.get('document_id')}::{item.get('parent_id')}"
+        if key not in cache:
+            cache[key] = shingles(item.get("parent_text") or "")
+        return cache[key]
+
+    for candidate in candidates:
+        mine = passage(candidate)
+        absorbed = False
+        for slot in kept if mine else []:
+            if slot.get("document_id") != candidate.get("document_id") or slot.get("parent_id") == candidate.get("parent_id"):
+                continue
+            theirs = passage(slot)
+            if not theirs:
+                continue
+            inside = containment(mine, theirs) >= threshold
+            fuller = not inside and containment(theirs, mine) >= threshold
+            if inside or fuller:
+                if fuller:
+                    for field in ("parent_id", "parent_text", "page_number", "chunk_index", "header_context"):
+                        if field in candidate:
+                            slot[field] = candidate[field]
+                slot["merged_duplicate"] = True
+                absorbed = True
+                break
+        if not absorbed:
+            kept.append(dict(candidate))
+    return kept
+
+
 RETRIEVAL_RERANK_MODES = ("jev_filter", "fused_only", "jev_soft")
 
 

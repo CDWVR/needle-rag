@@ -46,6 +46,7 @@ VISITOR_ROUTES = {
     ("GET", "/api/settings"), ("GET", "/api/conversations"), ("POST", "/api/conversations"),
     ("GET", "/api/documents"), ("GET", "/api/index"), ("GET", "/api/index/versions"), ("GET", "/api/eval/latest"),
     ("GET", "/api/analytics"), ("POST", "/api/chat"), ("POST", "/api/transcribe"),
+    ("POST", "/api/bug-reports"),  # send only; reading reports needs the owner
 }
 VISITOR_PREFIXES = (
     ("GET", "/api/conversations/"), ("PATCH", "/api/conversations/"), ("DELETE", "/api/conversations/"),  # own threads only
@@ -212,7 +213,8 @@ CONTENT_SECURITY_POLICY = "; ".join([
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob:",
-    "connect-src 'self'",
+    # The bug reporter reads the web fonts so its screenshot draws the page's own type.
+    "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com",
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
@@ -252,6 +254,10 @@ RATE_LIMITS = {
     "voice_hour": (20, 3600),
     "upload": (12, 60),
     "refresh": (3, 300),
+    "bug_report": (4, 600),          # bug reports: a few per client every ten minutes...
+    "bug_report_day": (20, 86400),   # ...a bounded number per client per day...
+    "bug_report_global": (200, 86400),  # ...and a ceiling across everyone, so storage stays small
+
     "write": (120, 60),
 }
 

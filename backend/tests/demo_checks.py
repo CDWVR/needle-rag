@@ -70,6 +70,27 @@ class VisitorTests(unittest.TestCase):
     def test_visitor_writes_still_need_the_csrf_header(self):
         self.assertEqual(visitor().post("/api/conversations").status_code, 403)
 
+    def test_visitors_can_send_a_bug_report_but_never_read_one(self):
+        client = visitor()
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 64 + b"\xff\xd9"
+        sent = client.post("/api/bug-reports", headers=WRITE, data={"description": "The chart overlaps", "page": "#analytics"},
+                           files={"screenshot": ("shot.jpg", jpeg, "image/jpeg")})
+        self.assertEqual(sent.status_code, 201, sent.text)
+        report_id = sent.json()["id"]
+        self.assertEqual(client.get("/api/bug-reports").status_code, 403)
+        self.assertEqual(client.get(f"/api/bug-reports/{report_id}/screenshot").status_code, 403)
+        self.assertEqual(client.delete(f"/api/bug-reports/{report_id}", headers=WRITE).status_code, 403)
+        owner = TestClient(main.app).get("/api/bug-reports", headers=OWNER).json()
+        self.assertEqual(owner["reports"][0]["role"], "visitor")
+        self.assertNotIn("reporter", owner["reports"][0])
+
+    def test_bug_reports_are_rate_limited_per_visitor(self):
+        client = visitor()
+        codes = [client.post("/api/bug-reports", headers=WRITE, data={"description": f"Problem number {i}"}).status_code
+                 for i in range(6)]
+        self.assertEqual(codes[:4], [201] * 4)
+        self.assertEqual(codes[4:], [429, 429])
+
     def test_conversations_are_private(self):
         alice, bob = visitor(), visitor()
         owner_conversation = TestClient(main.app).post("/api/conversations", headers=OWNER).json()["id"]

@@ -1,6 +1,7 @@
 import { api, ApiError, errorMessage, request } from "./api.js";
 import { renderMarkdown, plainText, escapeHtml } from "./markdown.js";
 import { outcomeBar, columnChart, lineChart, rankBars, wireTips } from "./charts.js";
+import { capturePage, prepareCapture } from "./capture.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -718,9 +719,23 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
   if (previous !== page && document.startViewTransition && !reducedMotion() && document.visibilityState === "visible" && !$("#bootSplash")) {
     const root = document.documentElement;
     root.classList.add("page-switching");
-    const transition = document.startViewTransition(() => applyPage(page));
+    let applied = false;
+    const apply = () => {
+      if (applied) return;
+      applied = true;
+      applyPage(page);
+    };
+    const transition = document.startViewTransition(apply);
     transition.finished.finally(() => root.classList.remove("page-switching"));
-    await transition.updateCallbackDone.catch(() => applyPage(page));
+    // The transition waits for a rendered frame. If none comes (an occluded or background window),
+    // skip the animation rather than leave the page unchanged.
+    const stalled = setTimeout(() => {
+      transition.skipTransition();
+      apply();
+    }, 300);
+    await transition.updateCallbackDone.catch(() => {});
+    clearTimeout(stalled);
+    apply();
     return;
   }
   applyPage(page);
@@ -753,6 +768,7 @@ function routeFromHash() {
     state.activeDocumentId = decodeURIComponent(id);
     state.focusPassage = passage ? decodeURIComponent(passage) : null;
   }
+  if (page === "settings" && id) state.settingsSection = id; // e.g. #settings/reports from a webhook message
   showPage(page || "ask", { updateHash: false });
 }
 
@@ -3125,6 +3141,7 @@ async function renderSettings() {
           <button type="button" data-settings="retrieval">Retrieval</button>
           <button type="button" data-settings="access">Access</button>
           <button type="button" data-settings="data">Data</button>
+          <button type="button" data-settings="reports">Bug reports <span class="nav-count" id="reportCount" hidden></span></button>
         </nav>
         <div>
           <section class="panel settings-section active" data-section="general">
@@ -3171,6 +3188,10 @@ async function renderSettings() {
             <div class="panel-head"><div><h2>Local data</h2><p>This workspace runs on this machine</p></div></div>
             <div class="form-block danger-zone"><h3>Delete workspace data</h3><p>Removes indexed documents, stored files, conversations, and saved settings. This can't be undone.</p><button class="btn danger" id="resetWorkspace" type="button">Delete workspace data…</button></div>
           </section>
+          <section class="panel settings-section" data-section="reports">
+            <div class="panel-head"><div><h2>Bug reports</h2><p>Sent with the bug button in the top bar, by you or by demo visitors. Set <code>NEEDLE_BUG_WEBHOOK_URL</code> to also get a message for each one.</p></div></div>
+            <div class="report-list" id="reportList"><div class="sk-loader">${loader()}</div></div>
+          </section>
           <div class="save-bar" id="saveBar" hidden role="region" aria-label="Unsaved changes">
             <span id="saveBarText">Unsaved changes</span>
             <div><button class="btn" id="discardSettings" type="button">Discard</button><button class="btn primary" id="saveSettings" type="button">Save changes</button></div>
@@ -3191,8 +3212,14 @@ async function renderSettings() {
       });
       $$(".settings-section", page).forEach((section) => section.classList.toggle("active", section.dataset.section === button.dataset.settings));
       applySettingsForm();
+      if (button.dataset.settings === "reports") return loadBugReports();
     })
   );
+  refreshBugBadge();
+  if (state.settingsSection) {
+    $(`[data-settings="${state.settingsSection}"]`, page)?.click();
+    state.settingsSection = null;
+  }
   settingFields.forEach(([id, key]) => {
     const node = $(`#${id}`, page);
     node.addEventListener("input", () => syncSettingsControl(node, key));
@@ -3290,6 +3317,8 @@ function buildPaletteItems() {
   if (isOwner()) items.push({ group: "Pages", label: "Settings", run: () => showPage("settings") });
   items.push({ group: "Actions", label: "New conversation", run: () => startNewConversation() });
   if (isOwner()) items.push({ group: "Actions", label: "Upload files", run: () => chooseFile("upload") });
+  items.push({ group: "Actions", label: "Report a problem", run: () => setTimeout(startBugReport, 200) }); // after the menu has closed
+  if (isOwner()) items.push({ group: "Actions", label: "Bug reports", run: () => openBugReports() });
   const theme = window.needleTheme?.get() || "system";
   THEMES.filter(([value]) => value !== theme).forEach(([value, label]) =>
     items.push({ group: "Appearance", label: value === "system" ? "Match the system theme" : `Switch to ${label.toLowerCase()} theme`, run: () => setTheme(value) })
@@ -3393,6 +3422,320 @@ $("#palette").addEventListener("click", (event) => {
 // Account, sign-in, sign-out
 // ---------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------
+// Bug reports: the page is captured, the screen flashes like a phone screenshot, and the shot
+// shrinks into a dialog where the person describes the problem. The owner reads reports in
+// Settings → Bug reports (and, if NEEDLE_BUG_WEBHOOK_URL is set, gets a message for each one).
+// ---------------------------------------------------------------------------------------
+
+const BUG_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M8 7.5V6a4 4 0 0 1 8 0v1.5"/><rect x="6.5" y="7.5" width="11" height="12" rx="5.5"/><path d="M12 11v8.5M6.5 13H3M21 13h-3.5M6.8 17.5 4 19.5M17.2 17.5l2.8 2M6.8 9.5 4.5 7.5M17.2 9.5l2.3-2"/></svg>`;
+const bugState = { open: false, capturing: false, shot: null, attach: true, returnFocus: null };
+
+function shutterFlash() {
+  if (reducedMotion()) return;
+  const flash = document.createElement("div");
+  flash.className = "shutter";
+  flash.dataset.captureSkip = "";
+  flash.setAttribute("aria-hidden", "true");
+  document.body.append(flash);
+  setTimeout(() => flash.remove(), 900);
+}
+
+async function startBugReport() {
+  if (bugState.open || bugState.capturing) return;
+  bugState.capturing = true;
+  bugState.returnFocus = document.activeElement;
+  closeMenu();
+  const trigger = $("#bugTrigger");
+  trigger.setAttribute("aria-busy", "true");
+  // Only a slow capture (fonts still loading) shows the busy state; a quick one would photograph it.
+  const busy = setTimeout(() => trigger.classList.add("capturing"), 300);
+  let shot = null;
+  try {
+    shot = await capturePage();
+  } catch (err) {
+    console.warn("Screenshot failed:", err);
+  } finally {
+    clearTimeout(busy);
+    trigger.classList.remove("capturing");
+    trigger.removeAttribute("aria-busy");
+    bugState.capturing = false;
+  }
+  shutterFlash();
+  openBugDialog(shot);
+}
+
+// The captured frame covers the screen exactly where the page was, then shrinks into its place
+// in the dialog: the same gesture as a phone screenshot sliding into its thumbnail.
+async function flyIntoPreview(shot, target) {
+  target.style.visibility = "hidden";
+  const fly = document.createElement("img");
+  fly.className = "shot-fly";
+  fly.alt = "";
+  fly.dataset.captureSkip = "";
+  fly.src = shot.url;
+  document.body.append(fly);
+  try {
+    await fly.decode();
+  } catch {
+    /* draw whatever is ready */
+  }
+  const box = target.getBoundingClientRect();
+  const scale = box.width / document.documentElement.clientWidth;
+  const radius = 12 / Math.max(scale, 0.05);
+  const animation = fly.animate(
+    [
+      { transform: "translate(0, 0) scale(1)", borderRadius: "0px", boxShadow: "0 0 0 0 rgba(0,0,0,0)" },
+      { offset: 0.22, transform: "translate(0, 0) scale(0.965)", borderRadius: "26px", boxShadow: "0 40px 100px rgba(0,0,0,.35)" },
+      { transform: `translate(${box.left}px, ${box.top}px) scale(${scale})`, borderRadius: `${radius}px`, boxShadow: "0 12px 30px rgba(0,0,0,.18)" },
+    ],
+    { duration: 700, easing: "cubic-bezier(.2,.8,.2,1)", fill: "forwards" }
+  );
+  await animation.finished.catch(() => {});
+  target.style.visibility = "";
+  fly.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, fill: "forwards" }).finished.finally(() => fly.remove());
+}
+
+function openBugDialog(shot) {
+  bugState.open = true;
+  bugState.shot = shot;
+  bugState.attach = Boolean(shot);
+  const root = document.createElement("div");
+  root.className = "bug-root";
+  root.id = "bugRoot";
+  root.dataset.captureSkip = "";
+  root.innerHTML = `
+    <div class="bug-card" role="dialog" aria-modal="true" aria-labelledby="bugTitle" aria-describedby="bugIntro">
+      <div class="bug-view" data-view="form">
+        <div class="bug-head">
+          <span class="bug-badge">${BUG_ICON}</span>
+          <div><h3 id="bugTitle">Report a problem</h3><p id="bugIntro">${shot ? "A screenshot of this page is attached." : "The screenshot could not be taken here, but you can still describe the problem."}</p></div>
+          <button type="button" class="bug-close" data-bug="cancel" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
+        </div>
+        ${shot ? `
+        <figure class="bug-preview">
+          <img src="${shot.url}" alt="Screenshot of the page you were on" style="aspect-ratio:${shot.width} / ${shot.height};width:min(100%, calc(36vh * ${(shot.width / shot.height).toFixed(4)}))" />
+          <figcaption>
+            <span class="bug-attach"><button type="button" class="switch on" id="bugAttach" role="switch" aria-checked="true" aria-label="Attach the screenshot"></button>Attach screenshot</span>
+            <span>${shot.width} × ${shot.height}</span>
+          </figcaption>
+        </figure>` : ""}
+        <label class="bug-label" for="bugText">What went wrong?</label>
+        <textarea id="bugText" rows="4" maxlength="2000" placeholder="What did you do, what happened, and what did you expect instead?"></textarea>
+        <div class="bug-foot"><span>Sent privately to the owner of this workspace, with the page address and your browser name.</span><span id="bugCount">0 / 2000</span></div>
+        <p class="form-error bug-error" id="bugError" role="alert" hidden></p>
+        <div class="bug-actions"><button type="button" class="btn" data-bug="cancel">Cancel</button><button type="button" class="btn primary" data-bug="send" disabled><span>Send report</span></button></div>
+      </div>
+    </div>`;
+  document.body.append(root);
+  const text = $("#bugText", root);
+  const send = $('[data-bug="send"]', root);
+  listen(text, "input", () => {
+    $("#bugCount", root).textContent = `${text.value.length} / 2000`;
+    send.disabled = text.value.trim().length < 5;
+    $("#bugError", root).hidden = true;
+  });
+  $$('[data-bug="cancel"]', root).forEach((button) => listen(button, "click", closeBugDialog));
+  listen(send, "click", sendBugReport);
+  const attach = $("#bugAttach", root);
+  if (attach) {
+    listen(attach, "click", () => {
+      bugState.attach = !bugState.attach;
+      attach.classList.toggle("on", bugState.attach);
+      attach.setAttribute("aria-checked", String(bugState.attach));
+      $(".bug-preview", root).classList.toggle("detached", !bugState.attach);
+    });
+  }
+  listen(root, "click", (event) => {
+    if (event.target === root && !text.value.trim()) closeBugDialog();
+  });
+  listen(root, "keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeBugDialog();
+    } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !send.disabled) {
+      sendBugReport();
+    } else if (event.key === "Tab") {
+      const items = $$("button:not([disabled]), textarea", root).filter((node) => node.offsetParent);
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
+  void root.offsetWidth; // commit the closed state so the fade-in transitions from it
+  root.classList.add("open");
+  if (shot && !reducedMotion()) flyIntoPreview(shot, $(".bug-preview img", root));
+  setTimeout(() => text.focus({ preventScroll: true }), reducedMotion() ? 0 : 420);
+}
+
+function closeBugDialog() {
+  const root = $("#bugRoot");
+  if (!root || root.classList.contains("closing")) return;
+  root.classList.add("closing");
+  root.classList.remove("open");
+  setTimeout(() => {
+    root.remove();
+    $$(".shot-fly").forEach((node) => node.remove());
+    if (bugState.shot) URL.revokeObjectURL(bugState.shot.url);
+    bugState.shot = null;
+    bugState.open = false;
+    bugState.returnFocus?.focus?.({ preventScroll: true });
+  }, reducedMotion() ? 0 : 280);
+}
+
+async function sendBugReport() {
+  const root = $("#bugRoot");
+  const send = $('[data-bug="send"]', root);
+  const text = $("#bugText", root).value.trim();
+  if (!root || text.length < 5 || send.classList.contains("sending")) return;
+  send.classList.add("sending");
+  send.disabled = true;
+  send.innerHTML = `${loader("small")}<span>Sending…</span>`;
+  try {
+    await api.sendBugReport({
+      description: text,
+      page: location.hash || "#ask",
+      viewport: `${window.innerWidth}×${window.innerHeight}`,
+      theme: document.documentElement.dataset.theme || "light",
+      screenshot: bugState.attach ? bugState.shot?.blob : null,
+    });
+    const view = $(".bug-view", root);
+    view.classList.add("leaving");
+    setTimeout(() => {
+      view.outerHTML = `
+        <div class="bug-view bug-sent" role="status">
+          <svg class="bug-check" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="m15 27 7 7 15-16"/></svg>
+          <h3>Thanks, report sent</h3>
+          <p>${isOwner() ? "It is in Settings → Bug reports." : "It went straight to the owner of this workspace."}</p>
+        </div>`;
+    }, reducedMotion() ? 0 : 160);
+    setTimeout(closeBugDialog, 1900);
+    if (isOwner()) refreshBugBadge();
+  } catch (err) {
+    send.classList.remove("sending");
+    send.disabled = false;
+    send.innerHTML = "<span>Send report</span>";
+    const error = $("#bugError", root);
+    error.textContent = err.message;
+    error.hidden = false;
+  }
+}
+
+// --- the owner's inbox (Settings → Bug reports) ---
+
+function browserName(agent = "") {
+  const browser = /Edg\//.test(agent) ? "Edge" : /Firefox\//.test(agent) ? "Firefox" : /Chrome\//.test(agent) ? "Chrome" : /Safari\//.test(agent) ? "Safari" : "Browser";
+  const system = /Windows/.test(agent) ? "Windows" : /iPhone|iPad/.test(agent) ? "iOS" : /Android/.test(agent) ? "Android" : /Mac OS X/.test(agent) ? "macOS" : /Linux/.test(agent) ? "Linux" : "";
+  return system ? `${browser} on ${system}` : browser;
+}
+
+function setBugBadge(count) {
+  const settings = $('.rail [data-page="settings"]');
+  if (settings) {
+    settings.classList.toggle("has-reports", count > 0);
+    settings.dataset.tip = count > 0 ? `Settings · ${count} open bug report${count === 1 ? "" : "s"}` : "Settings";
+  }
+  const chip = $("#reportCount");
+  if (chip) {
+    chip.textContent = String(count);
+    chip.hidden = !count;
+  }
+}
+
+async function refreshBugBadge({ announce = false } = {}) {
+  if (!isOwner()) return;
+  try {
+    const data = await api.bugReports();
+    setBugBadge(data.open);
+    if (announce && data.open) {
+      notify(`${data.open} open bug report${data.open === 1 ? "" : "s"}`, { action: { label: "View", onClick: () => openBugReports() } });
+    }
+  } catch {
+    /* the badge is a convenience */
+  }
+}
+
+function openBugReports() {
+  state.settingsSection = "reports";
+  if (state.page === "settings") $('[data-settings="reports"]')?.click();
+  else showPage("settings");
+}
+
+function reportCard(report) {
+  const open = report.status === "open";
+  return `
+    <article class="report ${open ? "" : "resolved"}" data-report="${escapeHtml(report.id)}">
+      ${report.has_screenshot
+        ? `<button type="button" class="report-shot" data-act="view" aria-label="View the screenshot full size"><img src="${api.bugScreenshotUrl(report.id)}" alt="" loading="lazy" /></button>`
+        : `<div class="report-shot none">No screenshot</div>`}
+      <div class="report-body">
+        <div class="report-meta">
+          <span class="status ${open ? "sync" : ""}">${open ? "Open" : "Resolved"}</span>
+          <span>${report.role === "visitor" ? "Demo visitor" : "You"}</span>
+          <span>${escapeHtml(when(report.created_at))}</span>
+          ${report.page ? `<span>${escapeHtml(report.page)}</span>` : ""}
+        </div>
+        <p class="report-text">${escapeHtml(report.description)}</p>
+        <div class="report-foot">
+          <span>${escapeHtml(browserName(report.user_agent))}${report.viewport ? ` · ${escapeHtml(report.viewport)}` : ""}${report.theme ? ` · ${escapeHtml(report.theme)} theme` : ""}</span>
+          <div><button type="button" class="btn small" data-act="toggle">${open ? "Mark resolved" : "Reopen"}</button><button type="button" class="btn small danger" data-act="delete">Delete</button></div>
+        </div>
+      </div>
+    </article>`;
+}
+
+function viewScreenshot(src) {
+  const box = document.createElement("div");
+  box.className = "lightbox";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  box.setAttribute("aria-label", "Screenshot");
+  box.tabIndex = -1;
+  box.innerHTML = `<img src="${src}" alt="Screenshot attached to the report" /><button type="button" class="bug-close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m18 6-12 12M6 6l12 12"/></svg></button>`;
+  const close = () => {
+    box.classList.add("closing");
+    setTimeout(() => box.remove(), reducedMotion() ? 0 : 200);
+  };
+  box.addEventListener("click", close);
+  box.addEventListener("keydown", (event) => event.key === "Escape" && (event.stopPropagation(), close()));
+  document.body.append(box);
+  box.focus();
+}
+
+async function loadBugReports() {
+  const list = $("#reportList");
+  if (!list) return;
+  const data = await api.bugReports();
+  setBugBadge(data.open);
+  list.innerHTML = data.reports.length
+    ? data.reports.map(reportCard).join("")
+    : `<p class="empty-note">No reports yet. The bug button in the top bar sends one, with a screenshot of the page.</p>`;
+  $$(".report", list).forEach((card) => {
+    const reportId = card.dataset.report;
+    listen($('[data-act="view"]', card), "click", () => viewScreenshot(api.bugScreenshotUrl(reportId)));
+    listen($('[data-act="toggle"]', card), "click", async () => {
+      const next = card.classList.contains("resolved") ? "open" : "resolved";
+      const result = await api.setBugStatus(reportId, next);
+      setBugBadge(result.open);
+      await loadBugReports();
+    });
+    listen($('[data-act="delete"]', card), "click", async () => {
+      const yes = await confirmDialog({ title: "Delete this report?", body: "The report and its screenshot are removed.", confirmLabel: "Delete", danger: true });
+      if (!yes) return;
+      card.classList.add("removing");
+      const result = await api.deleteBugReport(reportId);
+      setBugBadge(result.open);
+      setTimeout(loadBugReports, reducedMotion() ? 0 : 220);
+    });
+  });
+}
+
 // Theme: system, light or dark (js/theme.js applies and remembers it). Where the browser supports
 // view transitions, the new palette spreads out in a circle from the control that changed it.
 const THEMES = [
@@ -3413,7 +3756,10 @@ function syncThemeControls() {
 function setTheme(pref, origin = null) {
   const theme = window.needleTheme;
   if (!theme || theme.get() === pref) return;
+  let applied = false;
   const apply = () => {
+    if (applied) return;
+    applied = true;
     theme.set(pref);
     syncThemeControls();
   };
@@ -3426,7 +3772,13 @@ function setTheme(pref, origin = null) {
   root.style.setProperty("--tx", box ? `${box.left + box.width / 2}px` : "50%");
   root.style.setProperty("--ty", box ? `${box.top + box.height / 2}px` : "0px");
   root.classList.add("theme-switching");
-  document.startViewTransition(apply).finished.finally(() => root.classList.remove("theme-switching"));
+  const transition = document.startViewTransition(apply);
+  transition.finished.finally(() => root.classList.remove("theme-switching"));
+  setTimeout(() => {
+    if (applied) return;
+    transition.skipTransition(); // no frame came: switch without the reveal
+    apply();
+  }, 300);
 }
 
 function accountMenu() {
@@ -3680,9 +4032,14 @@ async function boot() {
   if (location.hash && location.hash !== "#ask") routeFromHash();
   hideSplash();
   moveRailPill(false);
+  refreshBugBadge({ announce: true });
+  // Fetch the fonts the screenshot needs while the page is idle, so the first capture is quick.
+  (window.requestIdleCallback || ((fn) => setTimeout(fn, 2500)))(() => prepareCapture());
 }
 
 listen(window, "resize", () => moveRailPill(false));
+listen($("#bugTrigger"), "click", startBugReport);
+listen($("#bugTrigger"), "pointerenter", prepareCapture);
 boot()
   .catch((err) => notify(err.message, { type: "error" }))
   .finally(hideSplash);
