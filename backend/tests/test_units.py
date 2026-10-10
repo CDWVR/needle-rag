@@ -403,6 +403,15 @@ class EvalSchemaTests(unittest.TestCase):
         bad = {**self.row, "type": "unanswerable"}
         self.assertTrue(validate_row(bad))
 
+    def test_expected_pages_must_be_positive_integers(self):
+        for page in (0, "3", 2.5):
+            bad = {**self.row, "expected": [{"document": "policy.pdf", "answer_span": "capped", "page": page}]}
+            self.assertTrue(any("page" in error for error in validate_row(bad)), page)
+        good = {**self.row, "expected": [{"document": "policy.pdf", "answer_span": "capped", "page": 3}]}
+        self.assertEqual(validate_row(good), [])
+        # An unanswerable row of the wrong type with no evidence used to crash the page check.
+        self.assertTrue(validate_row({**self.row, "answerable": False, "expected": []}))
+
     def test_duplicates_are_reported(self):
         twin = {**self.row, "id": "x2", "question": "what is  the CAP?"}
         problems = validate_dataset([self.row, twin, self.row])

@@ -114,11 +114,24 @@ class SeedTests(unittest.TestCase):
     def test_reseeding_neither_duplicates_nor_keeps_old_copies(self):
         import demo
 
-        self.assertGreater(demo.seed_demo_corpus(main.workspace), 0)
+        demo.seed_demo_corpus(main.workspace)  # the app already seeds in the background at startup; either order is fine
         self.assertEqual(demo.seed_demo_corpus(main.workspace), 0)  # a restart adds nothing, even for the rendered PDF
         names = [doc["name"] for doc in main.get_all_documents()]
-        self.assertEqual(names.count("employee_handbook.pdf"), 1)
-        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(names.count("Attention Mechanism.pdf"), 1)  # rendered from its text source
+        self.assertEqual(sorted(names), sorted({"Attention Mechanism.pdf", "Autoencoders.pdf", "rnn_basics.txt", "information_retrieval_basics.txt"}))
+
+    def test_documents_from_an_earlier_demo_set_are_removed(self):
+        """A redeploy keeps the volume, so a changed demo set must clear what the last release seeded."""
+        import demo
+        from ingest import process_document
+
+        demo.seed_demo_corpus(main.workspace)
+        old = process_document(b"Ottermere ships the Tern-3 cart. " * 20, "tern3_operator_manual.md", "text/plain", content_hash="old-demo-hash")
+        main.workspace.set_policy(old.id, collection=demo.COLLECTION, byte_size=100, stored_name="", content_hash="old-demo-hash")
+        self.assertIn("tern3_operator_manual.md", [doc["name"] for doc in main.get_all_documents()])
+        demo.seed_demo_corpus(main.workspace)
+        self.assertNotIn("tern3_operator_manual.md", [doc["name"] for doc in main.get_all_documents()])
+        self.assertIn("rnn_basics.txt", [doc["name"] for doc in main.get_all_documents()])
 
 
 class OwnerTests(unittest.TestCase):

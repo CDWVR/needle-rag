@@ -1,5 +1,6 @@
 import { api, ApiError, errorMessage, request } from "./api.js";
 import { renderMarkdown, plainText, escapeHtml } from "./markdown.js";
+import { outcomeBar, columnChart, lineChart, rankBars, wireTips } from "./charts.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -40,10 +41,10 @@ const state = {
 
 const isOwner = () => state.role === "owner";
 const SAMPLE_QUESTIONS = [
-  "How long did the Fleet Manager outage in March 2026 last, and what caused it?",
-  "What is the rated payload of the Tern-3 cart?",
-  "How did the nightly hotel cap change between the 2025 and 2026 travel policies?",
-  "What gates must a second lidar supplier pass before a purchase order is raised?",
+  "What is the vanishing gradient problem in RNNs, and how is it mitigated?",
+  "What is the difference between an LSTM and a GRU?",
+  "What is the difference between global and local attention?",
+  "How does reciprocal rank fusion combine BM25 and dense retrieval results?",
 ];
 const ACCEPTED = /\.(pdf|txt|md|text|docx|pptx|xlsx|csv)$/i;
 const RETRIEVAL_DEFAULTS = { top_k: 30, similarity_threshold: 0.3, max_parents: 5, rrf_k: 60 };
@@ -425,8 +426,218 @@ function countUp(root) {
   });
 }
 
+// The newest answer appears word by word. The server releases an answer only after the grounding
+// check, so this is a reveal, not a stream: about 1.5 s whatever the length, citations popping in as
+// the words reach them, code and tables fading in whole. Returns the reveal's length in ms.
+function revealWords(turn) {
+  const answer = turn && $(".answer", turn);
+  if (!answer || reducedMotion()) return 0;
+  const items = [];
+  const walk = (node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (child.nodeValue.trim()) items.push(child);
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.matches(".citation, pre, table, .math, svg, img")) items.push(child);
+        else walk(child);
+      }
+    }
+  };
+  walk(answer);
+  const units = items.reduce((sum, item) => sum + (item.nodeType === Node.TEXT_NODE ? item.nodeValue.split(/\s+/).filter(Boolean).length : 1), 0);
+  if (!units) return 0;
+  const step = Math.min(30, Math.max(6, 1500 / units));
+  let index = 0;
+  const delay = () => `${Math.round(120 + step * index++)}ms`;
+  for (const item of items) {
+    if (item.nodeType === Node.ELEMENT_NODE) {
+      item.classList.add(item.matches(".citation") ? "w-cite" : "w-block");
+      item.style.setProperty("--d", delay());
+      continue;
+    }
+    const fragment = document.createDocumentFragment();
+    for (const part of item.nodeValue.split(/(\s+)/)) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) {
+        fragment.append(part);
+        continue;
+      }
+      const word = document.createElement("span");
+      word.className = "w";
+      word.style.setProperty("--d", delay());
+      word.textContent = part;
+      fragment.append(word);
+    }
+    item.replaceWith(fragment);
+  }
+  answer.classList.add("words");
+  const total = Math.round(120 + step * index);
+  $$(".callout, .answer-actions", turn).forEach((node) => (node.style.animationDelay = `${total}ms`));
+  return total;
+}
+
+// The Needle mark assembling and folding in a loop: the loading symbol everywhere something waits.
+const loader = (size = "") => `<span class="needle-loader ${size}" aria-hidden="true">${LOGO_SVG}</span>`;
+
+// A pill slides between the options of a segmented control. Analytics re-renders its control on
+// each click, so the last position is remembered per control and the new pill starts from there.
+const segmentedFrom = new Map();
+function initSegmented(group) {
+  if (!group) return;
+  group.classList.add("has-pill");
+  let pill = $(".seg-pill", group);
+  if (!pill) {
+    pill = document.createElement("i");
+    pill.className = "seg-pill";
+    pill.setAttribute("aria-hidden", "true");
+    group.prepend(pill);
+  }
+  const put = ({ x, w }) => {
+    pill.style.transform = `translateX(${x}px)`;
+    pill.style.width = `${w}px`;
+  };
+  const place = (animate) => {
+    const on = $("button.active", group);
+    if (!on || !group.offsetParent) return;
+    pill.classList.toggle("still", !animate);
+    const at = { x: on.offsetLeft, w: on.offsetWidth };
+    put(at);
+    segmentedFrom.set(group.id, at);
+  };
+  const from = segmentedFrom.get(group.id);
+  if (from) {
+    pill.classList.add("still");
+    put(from);
+    void pill.offsetWidth; // commit the old position so the move animates
+    place(true);
+  } else place(false);
+  const watch = new MutationObserver(() => place(true));
+  $$("button", group).forEach((button) => watch.observe(button, { attributeFilter: ["class"] }));
+  document.fonts?.ready.then(() => place(false));
+}
+
+// The rail's active highlight is one shape that slides to the page you open.
+function moveRailPill(animate = true) {
+  const rail = $(".rail");
+  let pill = $(".rail-pill", rail);
+  if (!pill) {
+    pill = document.createElement("i");
+    pill.className = "rail-pill gone";
+    pill.setAttribute("aria-hidden", "true");
+    rail.prepend(pill);
+  }
+  const on = $(".icon-btn.active", rail);
+  if (!on || !on.offsetParent) {
+    pill.classList.add("gone");
+    rail.classList.remove("has-pill");
+    return;
+  }
+  rail.classList.add("has-pill");
+  const a = rail.getBoundingClientRect();
+  const b = on.getBoundingClientRect();
+  pill.classList.toggle("still", !animate || pill.classList.contains("gone"));
+  pill.classList.remove("gone");
+  pill.style.transform = `translate(${b.left - a.left}px, ${b.top - a.top}px)`;
+  pill.style.width = `${b.width}px`;
+  pill.style.height = `${b.height}px`;
+}
+
+// Native selects keep the value and the form wiring; this draws a styled button and option list
+// over each one, with the keyboard behavior of a listbox.
+function enhanceSelect(select) {
+  if (select.dataset.enhanced) return;
+  select.dataset.enhanced = "1";
+  const wrap = document.createElement("div");
+  wrap.className = "select";
+  select.after(wrap);
+  wrap.append(select);
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "select-button";
+  button.id = `${select.id}Button`;
+  button.setAttribute("aria-haspopup", "listbox");
+  button.setAttribute("aria-expanded", "false");
+  const list = document.createElement("ul");
+  list.className = "select-list";
+  list.id = `${select.id}List`;
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
+  button.setAttribute("aria-controls", list.id);
+  const label = $(`label[for="${select.id}"]`);
+  if (label) {
+    label.htmlFor = button.id;
+    label.id ||= `${select.id}Label`;
+    list.setAttribute("aria-labelledby", label.id);
+    button.setAttribute("aria-labelledby", `${label.id} ${button.id}`);
+  }
+  wrap.append(button, list);
+  let active = 0;
+  const isOpen = () => !list.hidden;
+  const paint = () => {
+    button.innerHTML = `<span>${escapeHtml(select.selectedOptions[0]?.text || "")}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
+    list.innerHTML = [...select.options]
+      .map(
+        (option, i) =>
+          `<li role="option" id="${list.id}-${i}" data-index="${i}" aria-selected="${option.selected}" class="${i === active ? "active" : ""}"><span>${escapeHtml(option.text)}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></li>`
+      )
+      .join("");
+    if (isOpen()) button.setAttribute("aria-activedescendant", `${list.id}-${active}`);
+    else button.removeAttribute("aria-activedescendant");
+  };
+  const open = (yes) => {
+    if (yes) active = Math.max(0, select.selectedIndex);
+    list.hidden = !yes;
+    wrap.classList.toggle("open", yes);
+    button.setAttribute("aria-expanded", String(yes));
+    paint();
+  };
+  const choose = (i) => {
+    if (select.selectedIndex !== i) {
+      select.selectedIndex = i;
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    open(false);
+  };
+  const move = (i) => {
+    active = Math.min(Math.max(i, 0), select.options.length - 1);
+    paint();
+  };
+  button.addEventListener("click", () => open(!isOpen()));
+  button.addEventListener("blur", () => isOpen() && open(false));
+  button.addEventListener("keydown", (event) => {
+    const keys = {
+      ArrowDown: () => (isOpen() ? move(active + 1) : open(true)),
+      ArrowUp: () => (isOpen() ? move(active - 1) : open(true)),
+      Home: () => isOpen() && move(0),
+      End: () => isOpen() && move(select.options.length - 1),
+      Enter: () => (isOpen() ? choose(active) : open(true)),
+      " ": () => (isOpen() ? choose(active) : open(true)),
+      Escape: () => isOpen() && open(false),
+    };
+    if (!keys[event.key] || (event.key === "Escape" && !isOpen())) return;
+    event.preventDefault();
+    event.stopPropagation();
+    keys[event.key]();
+  });
+  list.addEventListener("mousedown", (event) => event.preventDefault()); // keep focus on the button
+  list.addEventListener("click", (event) => {
+    const item = event.target.closest("li");
+    if (item) choose(Number(item.dataset.index));
+  });
+  list.addEventListener("mousemove", (event) => {
+    const item = event.target.closest("li");
+    if (item && Number(item.dataset.index) !== active) move(Number(item.dataset.index));
+  });
+  select.refreshCustom = paint;
+  paint();
+}
+
 const skeletonPage = () => `
   <div class="page-content skeleton-page" aria-hidden="true">
+    <div class="sk-loader">${loader("large")}</div>
     <div class="sk sk-eyebrow"></div><div class="sk sk-title"></div><div class="sk sk-line"></div>
     <div class="stat-grid">${'<div class="sk sk-card"></div>'.repeat(4)}</div>
     <div class="sk sk-panel"></div>
@@ -494,6 +705,7 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
     state.draftDirty = false;
     state.form = { ...(state.settings || {}) };
   }
+  const previous = state.page;
   state.page = page;
   if (updateHash) {
     const hash =
@@ -502,6 +714,19 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
         : `#${page}`;
     if (location.hash !== hash) history.pushState(null, "", hash);
   }
+  // A real page change lifts the old view away and settles the new one in; the rail and top bar stay put.
+  if (previous !== page && document.startViewTransition && !reducedMotion() && document.visibilityState === "visible" && !$("#bootSplash")) {
+    const root = document.documentElement;
+    root.classList.add("page-switching");
+    const transition = document.startViewTransition(() => applyPage(page));
+    transition.finished.finally(() => root.classList.remove("page-switching"));
+    await transition.updateCallbackDone.catch(() => applyPage(page));
+    return;
+  }
+  applyPage(page);
+}
+
+function applyPage(page) {
   $("#app").classList.toggle("subpage", page !== "ask");
   $$(".workspace-page").forEach((view) => view.classList.toggle("active", view.dataset.view === page));
   $$(".rail [data-page]").forEach((button) => {
@@ -510,6 +735,7 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
     if (on) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
+  moveRailPill();
   $("#currentCrumb").textContent = pageLabels[page] || "Ask";
   setTitle(page === "ask" ? activeConversationTitle() : pageLabels[page]);
   setSidebar(false);
@@ -897,7 +1123,7 @@ function pendingHtml(pending) {
   ).join("");
   return `
     <section class="turn pending" id="turn-pending" aria-label="Answering">
-      <div class="answer-kicker"><span>Working on it</span></div>
+      <div class="answer-kicker">${loader("small")}<span>Working on it</span></div>
       <h2 class="turn-question">${escapeHtml(pending.question)}</h2>
       <div class="progress-strip"><ol>${steps}</ol><span class="elapsed" id="pendingElapsed">0s</span></div>
       <p class="status-line" id="pendingMessage" role="status">${escapeHtml(pending.message)}</p>
@@ -920,12 +1146,12 @@ function emptyState() {
   }
   const noDocs = !docs.length && !state.demo;
   const heading = state.demo
-    ? "Ask a question about the sample documents."
+    ? "Ask a question about machine learning."
     : noDocs
       ? "Start by adding a document."
       : "Ask across the documents you have indexed.";
   const text = state.demo
-    ? "This demo has a small set of fictional company documents loaded: manuals, policies, an incident report, and pricing. Every answer cites the passages it came from, and the system says so when the documents do not answer."
+    ? "This demo has a few machine-learning documents loaded: notes on RNNs and on information retrieval, an attention-mechanism deck, and a short course on autoencoders. Every answer cites the passages it came from, and the system says so when the documents do not answer."
     : noDocs
       ? "Needle answers only from what you upload, and every answer shows the passage it came from."
       : "Every answer shows the passages it came from. When your documents don't cover a question, Needle says so.";
@@ -985,9 +1211,10 @@ function renderConversation() {
   setTitle(activeConversationTitle());
   if (state.revealTurn != null) {
     const reveal = state.revealTurn;
+    const duration = revealWords($(`#turn-${reveal}`));
     setTimeout(() => {
       if (state.revealTurn === reveal) state.revealTurn = null;
-    }, 1600);
+    }, Math.max(1600, duration + 600));
   }
   if (!pending && turns.length > 1 && "IntersectionObserver" in window) {
     // The evidence panel follows the turn being read.
@@ -1729,6 +1956,7 @@ async function runUpload(item) {
         notify(`${item.name} was indexed, but the previous version could not be removed. ${err.message}`, { type: "error" });
       }
     }
+    const first = !item.replaceId && !state.documents.some((doc) => doc.status === "indexed" && doc.id !== job.document_id);
     paintUploads();
     await refreshShell();
     if (state.page === "knowledge") await renderKnowledge();
@@ -1736,6 +1964,15 @@ async function runUpload(item) {
       state.activeDocumentId = job.document_id;
       state.focusPassage = null;
       showPage("document");
+    }
+    if (first && !item.forQuestion) {
+      celebrateFirstDocument(item.name);
+      return;
+    }
+    const panel = $("#uploadPanel");
+    if (panel && !panel.hidden && panel.offsetParent) {
+      const box = panel.getBoundingClientRect();
+      burst(box.left + 48, box.top + 40, 16);
     }
     notify(`${item.name} is ready to search`, {
       type: "success",
@@ -1749,6 +1986,56 @@ async function runUpload(item) {
     paintUploads();
     notify(`${item.name}: ${err.message}`, { type: "error" });
   }
+}
+
+// A burst of needle-shaped shards from a point on screen. Paths are fixed by index, not random.
+function burst(x, y, count = 24) {
+  if (reducedMotion()) return;
+  const colors = ["#d8ff3e", "#b9e03a", "var(--ink)", "#2546e8"];
+  const node = document.createElement("div");
+  node.className = "burst";
+  node.setAttribute("aria-hidden", "true");
+  node.style.left = `${x}px`;
+  node.style.top = `${y}px`;
+  node.innerHTML = Array.from({ length: count }, (_, i) => {
+    const angle = (i / count) * Math.PI * 2 + (i % 3) * 0.35;
+    const distance = 80 + ((i * 37) % 80);
+    const spin = (i % 2 ? 1 : -1) * (120 + ((i * 29) % 160));
+    return `<i style="--x:${(Math.cos(angle) * distance).toFixed(1)}px;--y:${(Math.sin(angle) * distance - 24).toFixed(1)}px;--r:${(i * 47) % 180}deg;--spin:${spin}deg;--delay:${(i % 5) * 18}ms;--c:${colors[i % colors.length]}"></i>`;
+  }).join("");
+  document.body.append(node);
+  setTimeout(() => node.remove(), 1500);
+}
+
+// The first document in a workspace is a milestone: a burst and a card that leads to the first question.
+function celebrateFirstDocument(name) {
+  burst(window.innerWidth / 2, Math.min(window.innerHeight * 0.3, 260), 36);
+  $(".celebrate-card")?.remove();
+  const card = document.createElement("div");
+  card.className = "celebrate-card";
+  card.setAttribute("role", "status");
+  card.innerHTML = `
+    <div class="logo-build">${LOGO_SVG}</div>
+    <h3>Your knowledge base is live</h3>
+    <p>${escapeHtml(name)} is indexed. Ask a question, and every answer will point back to the passage it came from.</p>
+    <div class="actions"><button type="button" class="btn" data-act="later">Later</button><button type="button" class="btn primary" data-act="ask">Ask a question</button></div>`;
+  document.body.append(card);
+  let timer = null;
+  const close = () => {
+    clearTimeout(timer);
+    if (!card.isConnected || card.classList.contains("leaving")) return;
+    card.classList.add("leaving");
+    setTimeout(() => card.remove(), reducedMotion() ? 0 : 260);
+  };
+  $('[data-act="later"]', card).addEventListener("click", close);
+  card.addEventListener("keydown", (event) => event.key === "Escape" && close());
+  $('[data-act="ask"]', card).addEventListener("click", async () => {
+    close();
+    await showPage("ask");
+    $("#askInput")?.focus();
+  });
+  $('[data-act="ask"]', card).focus();
+  timer = setTimeout(close, 15000);
 }
 
 function paintUploads() {
@@ -1910,6 +2197,7 @@ async function renderKnowledge() {
       paintDocuments();
     })
   );
+  initSegmented($("#docFilter"));
   $$("[data-sort]", $("#page-knowledge")).forEach((button) =>
     listen(button, "click", () => {
       const key = button.dataset.sort;
@@ -2393,7 +2681,7 @@ async function renderPipeline() {
             </div>
           </section>
           <section class="panel">
-            <div class="panel-head"><div><h2>Quality gate</h2><p>${latestEval ? `Hermetic eval · ${escapeHtml(latestEval.tier)} tier · ${escapeHtml(when(latestEval.finished_at))}` : "No eval run recorded yet"}</p></div>${latestEval ? `<span class="status ${latestEval.gate?.passed ? "" : "sync"}">${latestEval.gate?.passed ? "Pass" : "Fail"}</span>` : ""}</div>
+            <div class="panel-head"><div><h2>Quality gate</h2><p>${qualityCaption(latestEval)}</p></div>${qualityStatus(latestEval)}</div>
             ${evalPanel(latestEval)}
           </section>
         </div>
@@ -2421,21 +2709,42 @@ async function renderPipeline() {
   setTitle("Index pipeline");
 }
 
+// The quality gate is Needle's built-in exam: test questions with known answers, run before a change
+// ships. A change that makes retrieval or answers worse fails the gate.
+function qualityCaption(report) {
+  if (!report) return "Not measured on this server yet";
+  const n = report.questions || report.metrics?.questions;
+  const day = report.finished_at ? dayLabel(new Date(report.finished_at)) : "";
+  return report.source === "baseline"
+    ? `Release baseline · ${n || 117} test questions${day ? ` · ${day}` : ""}`
+    : `Last test run${n ? ` · ${n} questions` : ""}${day ? ` · ${day}` : ""}`;
+}
+
+function qualityStatus(report) {
+  if (!report) return "";
+  if (report.source === "baseline") return `<span class="status">Baseline</span>`;
+  if (!report.gate) return "";
+  return `<span class="status ${report.gate.passed ? "" : "sync"}">${report.gate.passed ? "Passed" : "Failed"}</span>`;
+}
+
 function evalPanel(report) {
   if (!report) {
-    return `<div class="form-block"><p>Run <code>python -m eval run</code> in <code>backend/</code> to measure retrieval and answer quality on the repo's test corpus.</p></div>`;
+    return `<div class="form-block quality-empty">
+      <p>The quality gate is a built-in exam: test questions with known answers that Needle must get right before a change ships. Results appear here after a test run.</p>
+      ${isOwner() ? `<details class="dev-note"><summary>How to run it</summary><p>On the server, in <code>backend/</code>: <code>python -m eval run</code></p></details>` : ""}
+    </div>`;
   }
   const retrieval = report.metrics?.retrieval || {};
   const answers = report.metrics?.answers;
   const abstain = report.metrics?.abstention;
   const rows = [
-    ["Recall@5", "Expected passage in the top five", percent(retrieval.hit_at_5)],
-    ["MRR", "Rank of the first relevant passage", retrieval.mrr == null ? "—" : Number(retrieval.mrr).toFixed(2)],
+    ["Right passage found", "The correct passage was in the top five results", percent(retrieval.hit_at_5)],
+    ["Ranked first", "How often the correct passage came first", percent(retrieval.hit_at_1)],
   ];
   if (answers) {
-    rows.push(["Answer rate", "Answerable questions released as grounded", percent(answers.answer_rate)]);
-    rows.push(["Key-fact recall", "Facts present in released answers", percent(answers.key_fact_recall)]);
-    rows.push(["Abstention recall", "Unanswerable questions withheld", percent(abstain?.recall)]);
+    rows.push(["Answered", "Answerable questions released with sources", percent(answers.answer_rate)]);
+    rows.push(["Facts correct", "Required facts present in released answers", percent(answers.key_fact_recall)]);
+    rows.push(["Declined correctly", "Unanswerable questions held back instead of guessed", percent(abstain?.recall)]);
   }
   return `<div class="metric-list">${rows
     .map(([label, hint, value]) => `<div class="metric-row"><div><strong>${label}</strong><p>${hint}</p></div><div class="metric-score">${value}</div></div>`)
@@ -2449,7 +2758,7 @@ async function refreshIndex(override = false) {
     "Refreshing the index",
     `<p>Needle builds a new index version beside the live one and switches over only if it's complete and search quality holds up. Questions keep working while this runs.</p>
      <ol class="refresh-steps"><li>Copy every passage into a new version</li><li>Embed passages with the current settings</li><li>Compare recall on your golden questions</li><li>Publish the new version</li></ol>
-     <div class="indeterminate" role="progressbar" aria-label="Refreshing the index"><i></i></div>
+     <div class="refresh-progress">${loader("small")}<div class="indeterminate" role="progressbar" aria-label="Refreshing the index"><i></i></div></div>
      <p class="refresh-elapsed" id="refreshElapsed">Started just now</p>`,
     [],
     { locked: true }
@@ -2532,8 +2841,12 @@ async function renderAnalytics() {
   const prior = report.prior || {};
   const max = Math.max(1, ...series.map((point) => Number(point.questions) || 0));
   const gaps = report.gaps || [];
-  const step = Math.max(1, Math.round(series.length / 6));
-  const labels = series.filter((_, index) => index % step === 0).map((point) => `<span>${escapeHtml(shortDay(point.day))}</span>`).join("");
+  const step = Math.max(1, Math.ceil(series.length / 6));
+  // Date labels sit under their own bars (and always include the most recent day).
+  const labelAt = (i) => `<span style="left:${(((i + 0.5) / series.length) * 100).toFixed(2)}%">${escapeHtml(shortDay(series[i].day))}</span>`;
+  const labelIdx = series.map((_, i) => i).filter((i) => (series.length - 1 - i) % step === 0);
+  const labels = labelIdx.map(labelAt).join("");
+  const ticks = [...new Set(max <= 4 ? Array.from({ length: max + 1 }, (_, i) => i) : [0, Math.round(max / 2), max])];
   const perDay = report.questions ? report.questions / (report.days || state.analyticsDays) : 0;
   const dailyAverage = perDay && perDay < 0.1 ? "<0.1" : perDay.toFixed(1);
   const evalReport = evals?.hermetic;
@@ -2542,7 +2855,6 @@ async function renderAnalytics() {
   const fewRatings = ratings > 0 && ratings < 10;
   const pct = (value) => (value == null ? null : Math.round(Number(value) * 1000) / 10);
   const countAttr = (value) => (value == null ? "" : `data-count="${value}" data-format="pct"`);
-  const half = Math.round(max / 2);
   $("#page-analytics").innerHTML = `
     <div class="page-content">
       <header class="page-header">
@@ -2565,14 +2877,18 @@ async function renderAnalytics() {
           ${
             report.questions
               ? `<div class="chart-wrap">
-                  <div class="chart-axis" aria-hidden="true"><span>${max}</span><span>${half && half !== max ? half : ""}</span><span>0</span></div>
-                  <div class="chart" id="chart" role="img" aria-label="${state.analyticsDays}-day bar chart: ${report.questions} questions, ${percent(report.grounded_rate)} grounded">${series
-                    .map(
-                      (point, i) =>
-                        `<div class="bar-group" data-day="${escapeHtml(shortDay(point.day))}" data-asked="${point.questions}" data-grounded="${point.grounded}" style="--i:${i}"><i class="bar" style="height:${Math.round(((Number(point.questions) || 0) / max) * 100)}%"></i><i class="bar secondary" style="height:${Math.round(((Number(point.grounded) || 0) / max) * 100)}%"></i></div>`
-                    )
-                    .join("")}<div class="chart-tip" id="chartTip" hidden></div></div>
-                </div><div class="chart-labels">${labels}</div>`
+                  <div class="plot" id="chart" role="img" aria-label="${state.analyticsDays}-day bar chart: ${report.questions} questions, ${percent(report.grounded_rate)} grounded">
+                    ${ticks.map((t) => `<i class="grid" style="bottom:${((t / max) * 100).toFixed(2)}%"><span>${t}</span></i>`).join("")}
+                    <div class="bars">${series
+                      .map(
+                        (point, i) =>
+                          `<div class="bar-group" data-day="${escapeHtml(shortDay(point.day))}" data-asked="${point.questions}" data-grounded="${point.grounded}" style="--i:${i}"><i class="bar" style="height:${((Number(point.questions) || 0) / max) * 100}%"></i><i class="bar secondary" style="height:${((Number(point.grounded) || 0) / max) * 100}%"></i></div>`
+                      )
+                      .join("")}</div>
+                    <div class="chart-tip" id="chartTip" hidden></div>
+                  </div>
+                  <div class="plot-labels">${labels}</div>
+                </div>`
               : `<p class="empty-note">Ask a few questions to fill this chart.</p>`
           }
         </section>
@@ -2582,15 +2898,50 @@ async function renderAnalytics() {
             <div class="metric-row"><div><strong>Citation coverage</strong><p>Share of released answers whose text cites a numbered source</p></div><div class="metric-score">${percent(report.citation_coverage)}</div></div>
             <div class="metric-row"><div><strong>Average relevance</strong><p>Best Jev score per question</p></div><div class="metric-score">${report.mean_relevance == null ? "—" : Number(report.mean_relevance).toFixed(2)}</div></div>
             <div class="metric-row"><div><strong>Retrieval latency</strong><p>Median search + rerank time</p></div><div class="metric-score">${report.retrieval_p50_ms == null ? "—" : escapeHtml(seconds(report.retrieval_p50_ms))}</div></div>
-            <div class="metric-row"><div><strong>Fallback precision</strong><p>${evalReport ? "Correct withholds in the last eval" : "Run the full eval to measure"}</p></div><div class="metric-score">${percent(abstainPrecision)}</div></div>
+            <div class="metric-row"><div><strong>Fallback precision</strong><p>${evalReport ? "Of the questions held back in testing, how many truly had no answer" : "Measured by the test questions"}</p></div><div class="metric-score">${percent(abstainPrecision)}</div></div>
           </div>
         </section>
       </div>
+      <div class="viz-grid">
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>How questions ended</h2><p>Every question in the last ${state.analyticsDays} days, by outcome</p></div></div>
+          <div class="viz-body">${outcomeBar(report.outcomes || {})}</div>
+        </section>
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>Response time</h2><p>Time to an answer, per day: the median and the slowest 5%</p></div></div>
+          <div class="viz-body">${lineChart({
+            points: (report.latency_series || []).map((p) => ({ ...p, label: shortDay(p.day) })),
+            series: [
+              { key: "p50_ms", label: "Median", color: "var(--viz-1)" },
+              { key: "p95_ms", label: "Slowest 5%", color: "var(--viz-2)" },
+            ],
+            ariaLabel: "Daily median and 95th percentile response time",
+            format: (ms) => (ms == null ? "—" : seconds(ms)),
+          })}</div>
+        </section>
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>When people ask</h2><p>Questions by hour of the day, in your time zone</p></div></div>
+          <div class="viz-body">${hoursChart(report.hours_utc || [])}</div>
+        </section>
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>Evidence strength</h2><p>The best relevance score each question got; low scores usually mean a coverage gap</p></div></div>
+          <div class="viz-body">${columnChart({
+            values: (report.relevance_bins || []).map((b) => b.count),
+            labels: (report.relevance_bins || []).map((b) => `${b.from.toFixed(1)}–${b.to.toFixed(1)}`),
+            tips: (report.relevance_bins || []).map((b) => [`Relevance ${b.from.toFixed(1)}–${b.to.toFixed(1)}`, `${b.count} question${b.count === 1 ? "" : "s"}`]),
+            ariaLabel: "Questions by best evidence relevance",
+          })}</div>
+        </section>
+        <section class="panel viz-panel wide">
+          <div class="panel-head"><div><h2>Most-used documents</h2><p>How many answers drew on each document</p></div></div>
+          <div class="viz-body">${rankBars((report.top_documents || []).map((d) => ({ label: d.name, value: d.answers })), { unit: "answer" })}</div>
+        </section>
+      </div>
       <section class="panel" style="margin-top:14px">
-        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>No strong passage: the documents don't cover it. Failed the check: the draft was the problem, so asking again may work.</p></div></div>
-        <div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best match</th><th>Last asked</th><th><span class="sr-only">Action</span></th></tr></thead><tbody>
-          ${gaps.map((gap, index) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Failed the check" : "No strong passage"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : `${Number(gap.best_similarity).toFixed(2)} similarity`}</td><td>${escapeHtml(when(gap.last_seen))}</td><td><button class="btn small" type="button" data-gap="${index}" ${gap.outcome === "check_failed" ? "" : "data-owner"}>${gap.outcome === "check_failed" ? "Ask again" : "Add a source"}</button></td></tr>`).join("") || `<tr><td colspan="6"><p class="empty-note">No withheld questions in this range.</p></td></tr>`}
-        </tbody></table></div>
+        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>Questions Needle held back instead of guessing. “Not in the documents”: nothing strong enough was found, so add a source that covers it. “Failed the check”: a draft was written but not backed by the passages, so asking again (or rewording) may work.</p></div></div>
+        ${state.role === "visitor" ? `<p class="empty-note gap-private">In the public demo, visitors’ questions stay private, so this list is visible only to the owner. The totals above include everyone’s questions.</p>` : `<div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best match</th><th>Last asked</th><th><span class="sr-only">Action</span></th></tr></thead><tbody>
+          ${gaps.map((gap, index) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Failed the check" : "Not in the documents"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : `${Number(gap.best_similarity).toFixed(2)} similarity`}</td><td>${escapeHtml(when(gap.last_seen))}</td><td><button class="btn small" type="button" data-gap="${index}" ${gap.outcome === "check_failed" ? "" : "data-owner"}>${gap.outcome === "check_failed" ? "Ask again" : "Add a source"}</button></td></tr>`).join("") || `<tr><td colspan="6"><p class="empty-note">No withheld questions in this range. Gaps appear here when a question isn’t covered by your documents or an answer fails the grounding check.</p></td></tr>`}
+        </tbody></table></div>`}
       </section>
     </div>`;
   $$("#range button").forEach((button) =>
@@ -2609,24 +2960,46 @@ async function renderAnalytics() {
     })
   );
   wireChart();
+  wireTips($("#page-analytics"));
+  initSegmented($("#range"));
   if (first) countUp($("#page-analytics"));
   setTitle("Analytics");
+}
+
+// Questions by local hour: the server counts UTC hours, the browser shifts them.
+function hoursChart(utc) {
+  const offset = Math.round(-new Date().getTimezoneOffset() / 60);
+  const local = Array.from({ length: 24 }, (_, hour) => utc[(hour - offset + 48) % 24] || 0);
+  const label = (h) => `${h % 12 || 12}${h < 12 ? "am" : "pm"}`;
+  return columnChart({
+    values: local,
+    labels: local.map((_, h) => label(h)),
+    tips: local.map((n, h) => [`${label(h)}–${label((h + 1) % 24)}`, `${n} question${n === 1 ? "" : "s"}`]),
+    ariaLabel: "Questions by hour of the day",
+    every: 6,
+  });
 }
 
 function wireChart() {
   const chart = $("#chart");
   const tip = $("#chartTip");
   if (!chart || !tip) return;
+  const show = (group) => {
+    $$(".bar-group.on", chart).forEach((other) => other.classList.remove("on"));
+    group.classList.add("on");
+    tip.innerHTML = `<strong>${escapeHtml(group.dataset.day)}</strong><span><i class="key asked"></i>${group.dataset.asked} asked</span><span><i class="key grounded"></i>${group.dataset.grounded} grounded</span>`;
+    tip.hidden = false;
+    const half = tip.offsetWidth / 2;
+    const center = group.offsetLeft + group.offsetWidth / 2;
+    tip.style.left = `${Math.min(Math.max(center, half + 4), chart.clientWidth - half - 4)}px`;
+  };
+  const hide = () => {
+    tip.hidden = true;
+    $$(".bar-group.on", chart).forEach((group) => group.classList.remove("on"));
+  };
   $$(".bar-group", chart).forEach((group) => {
-    group.addEventListener("mouseenter", () => {
-      tip.innerHTML = `<strong>${escapeHtml(group.dataset.day)}</strong><span>${group.dataset.asked} asked</span><span>${group.dataset.grounded} grounded</span>`;
-      tip.hidden = false;
-      const left = group.offsetLeft + group.offsetWidth / 2;
-      tip.style.left = `${Math.min(Math.max(left, 60), chart.clientWidth - 60)}px`;
-    });
-    group.addEventListener("mouseleave", () => {
-      tip.hidden = true;
-    });
+    group.addEventListener("mouseenter", () => show(group));
+    group.addEventListener("mouseleave", hide);
   });
 }
 
@@ -2672,6 +3045,7 @@ function applySettingsForm() {
   settingFields.forEach(([id, key]) => {
     const node = $(`#${id}`, page);
     if (node && document.activeElement !== node) node.value = form[key] ?? "";
+    node?.refreshCustom?.();
   });
   $$("[data-switch]", page).forEach((button) => {
     const on = Boolean(form[button.dataset.switch]);
@@ -2804,9 +3178,10 @@ async function renderSettings() {
         </div>
       </div>
     </div>`;
+  const page = $("#page-settings");
+  $$("select", page).forEach(enhanceSelect);
   applySettingsForm();
   syncSaveBar();
-  const page = $("#page-settings");
   $$(".settings-nav button", page).forEach((button) =>
     listen(button, "click", () => {
       $$(".settings-nav button", page).forEach((item) => {
@@ -2915,6 +3290,10 @@ function buildPaletteItems() {
   if (isOwner()) items.push({ group: "Pages", label: "Settings", run: () => showPage("settings") });
   items.push({ group: "Actions", label: "New conversation", run: () => startNewConversation() });
   if (isOwner()) items.push({ group: "Actions", label: "Upload files", run: () => chooseFile("upload") });
+  const theme = window.needleTheme?.get() || "system";
+  THEMES.filter(([value]) => value !== theme).forEach(([value, label]) =>
+    items.push({ group: "Appearance", label: value === "system" ? "Match the system theme" : `Switch to ${label.toLowerCase()} theme`, run: () => setTheme(value) })
+  );
   state.documents
     .filter((doc) => doc.status === "indexed")
     .forEach((doc) => items.push({ group: "Documents", label: docTitle(doc.name), hint: doc.name, run: () => openDocument(doc.id) }));
@@ -3014,6 +3393,42 @@ $("#palette").addEventListener("click", (event) => {
 // Account, sign-in, sign-out
 // ---------------------------------------------------------------------------------------
 
+// Theme: system, light or dark (js/theme.js applies and remembers it). Where the browser supports
+// view transitions, the new palette spreads out in a circle from the control that changed it.
+const THEMES = [
+  ["system", "System"],
+  ["light", "Light"],
+  ["dark", "Dark"],
+];
+
+function syncThemeControls() {
+  const pref = window.needleTheme?.get() || "system";
+  $$("button[data-theme-pref]").forEach((button) => {
+    const on = button.dataset.themePref === pref;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", String(on));
+  });
+}
+
+function setTheme(pref, origin = null) {
+  const theme = window.needleTheme;
+  if (!theme || theme.get() === pref) return;
+  const apply = () => {
+    theme.set(pref);
+    syncThemeControls();
+  };
+  if (!document.startViewTransition || reducedMotion()) {
+    apply();
+    return;
+  }
+  const root = document.documentElement;
+  const box = origin?.getBoundingClientRect();
+  root.style.setProperty("--tx", box ? `${box.left + box.width / 2}px` : "50%");
+  root.style.setProperty("--ty", box ? `${box.top + box.height / 2}px` : "0px");
+  root.classList.add("theme-switching");
+  document.startViewTransition(apply).finished.finally(() => root.classList.remove("theme-switching"));
+}
+
 function accountMenu() {
   const anchor = $("#avatar");
   const settings = state.settings || {};
@@ -3028,6 +3443,20 @@ function accountMenu() {
     head.className = "menu-head";
     head.innerHTML = `<strong>${escapeHtml(settings.profile_name || "Operator")}</strong><span>${escapeHtml(state.role === "visitor" ? "Visitor · public demo" : settings.workspace_name || "Needle")}</span>`;
     menu.prepend(head);
+    const themeRow = document.createElement("div");
+    themeRow.className = "menu-theme";
+    themeRow.innerHTML = `<span id="themeLabel">Appearance</span><div class="segmented" id="themeSwitch" role="group" aria-labelledby="themeLabel">${THEMES.map(
+      ([value, label]) => `<button type="button" data-theme-pref="${value}">${label}</button>`
+    ).join("")}</div>`;
+    head.after(themeRow);
+    syncThemeControls();
+    $$("button", themeRow).forEach((button) =>
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setTheme(button.dataset.themePref, button);
+      })
+    );
+    initSegmented($("#themeSwitch"));
   }
 }
 
@@ -3230,9 +3659,18 @@ function applyRole(session) {
   $("#demoBadge").hidden = !state.demo;
 }
 
+// The splash in index.html covers the first load; it fades once there is something to show.
+function hideSplash() {
+  const splash = $("#bootSplash");
+  if (!splash) return;
+  splash.classList.add("done");
+  setTimeout(() => splash.remove(), reducedMotion() ? 0 : 420);
+}
+
 async function boot() {
   const session = await api.session();
   if (!session.authenticated) {
+    hideSplash();
     showSignIn();
     return;
   }
@@ -3240,6 +3678,11 @@ async function boot() {
   await refreshShell();
   renderConversation();
   if (location.hash && location.hash !== "#ask") routeFromHash();
+  hideSplash();
+  moveRailPill(false);
 }
 
-boot().catch((err) => notify(err.message, { type: "error" }));
+listen(window, "resize", () => moveRailPill(false));
+boot()
+  .catch((err) => notify(err.message, { type: "error" }))
+  .finally(hideSplash);

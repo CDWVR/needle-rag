@@ -265,11 +265,8 @@ class WorkspaceStore:
                 "SELECT 1 FROM conversations WHERE id = ? AND owner = ?", (conversation_id, owner)
             ).fetchone():
                 return False
-            # Analytics events are kept: they record that a question was asked, not the conversation.
-            self.conn.execute(
-                "DELETE FROM feedback WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)",
-                (conversation_id,),
-            )
+            # Analytics are workspace-wide aggregates: the events and ratings stay when a visitor tidies
+            # up their own history, so deleting a thread never changes the numbers everyone sees.
             self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
             self.conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
             self.conn.commit()
@@ -501,10 +498,54 @@ class WorkspaceStore:
             slot["grounded"] += 1 if event["grounded"] else 0
         metrics = {key: value for key, value in current.items() if key != "events"}
         previous = {key: value for key, value in prior.items() if key != "events"}
+        events = current["events"]
+        # How questions ended: released as grounded, not covered by the documents, withheld by the check, or failed.
+        outcomes = {"answered": 0, "no_coverage": 0, "check_failed": 0, "error": 0}
+        for event in events:
+            key = event["outcome"] or ("answered" if event["grounded"] else "no_coverage" if event["withheld"] else "check_failed")
+            outcomes[key if key in outcomes else "error"] += 1
+        # Response time per day (median and slowest-5%), only days with questions.
+        latency_days: Dict[str, List[int]] = {}
+        for event in events:
+            if event["latency_ms"]:
+                latency_days.setdefault(event["created_at"][:10], []).append(int(event["latency_ms"]))
+        latency_series = [
+            {"day": day, "p50_ms": _p50(sorted(values)), "p95_ms": _percentile(sorted(values), 0.95), "n": len(values)}
+            for day, values in sorted(latency_days.items())
+        ]
+        # When people ask (UTC hour; the browser shifts it to local time).
+        hours = [0] * 24
+        for event in events:
+            try:
+                hours[int(event["created_at"][11:13])] += 1
+            except (ValueError, IndexError):
+                pass
+        # How strong the best evidence was.
+        edges = [0.2, 0.4, 0.6, 0.8, 1.01]
+        relevance_bins = [0] * len(edges)
+        for event in events:
+            if event["relevance"] is not None:
+                relevance_bins[next(i for i, edge in enumerate(edges) if float(event["relevance"]) < edge)] += 1
+        with self._lock:
+            # Which documents answers drew on (counts answers, not passages). Names only, never question text.
+            rows = self.conn.execute(
+                "SELECT sources_json FROM messages WHERE role = 'assistant' AND created_at >= ? AND sources_json IS NOT NULL AND sources_json != '[]'",
+                (since,),
+            ).fetchall()
+        documents: Dict[str, int] = {}
+        for row in rows:
+            names = {source.get("document_name") for source in (_loads(row["sources_json"]) or []) if source.get("relation", "supporting") == "supporting"}
+            for name in filter(None, names):
+                documents[name] = documents.get(name, 0) + 1
         return {
             "days": days,
             **metrics,
             "prior": previous,
+            "outcomes": outcomes,
+            "latency_series": latency_series,
+            "hours_utc": hours,
+            "relevance_bins": [{"from": 0 if i == 0 else edges[i - 1], "to": min(edge, 1.0), "count": count} for i, (edge, count) in enumerate(zip(edges, relevance_bins))],
+            "top_documents": [{"name": name, "answers": count} for name, count in sorted(documents.items(), key=lambda item: -item[1])[:6]],
             "series": [{"day": day, **counts} for day, counts in sorted(buckets.items())],
             "gaps": [
                 {
@@ -696,6 +737,12 @@ def _loads(value: Optional[str]):
 
 def _rate(numerator: int, denominator: int) -> Optional[float]:
     return round(numerator / denominator, 4) if denominator else None
+
+
+def _percentile(values: List[int], q: float) -> Optional[int]:
+    if not values:
+        return None
+    return int(values[min(len(values) - 1, int(round(q * (len(values) - 1))))])
 
 
 def _p50(values: List[int]) -> Optional[int]:

@@ -3,6 +3,7 @@
     python -m eval validate                          # dataset lint, no engine, no network (CI)
     python -m eval run --suite hermetic --tier offline   # retrieval gate, free and deterministic (CI)
     python -m eval run --suite hermetic --tier full      # production path, costs OpenRouter credit
+    python -m eval run --suite demo --tier offline       # the public demo's documents (backend/demo_corpus)
     python -m eval run --suite workspace --tier offline  # your own documents, read-only
     python -m eval compare reports/hermetic/latest.json baselines/hermetic-offline.json
     python -m eval promote reports/hermetic/<run-dir>   # make a reviewed run the baseline
@@ -68,12 +69,34 @@ def _dirty() -> Optional[bool]:
         return None
 
 
-def _corpus_texts() -> Dict[str, str]:
+def corpus_dir(config: Dict[str, Any], suite: str) -> Optional[str]:
+    """The repo folder a suite is built from, or None for a suite that runs against a live index."""
+    folder = config["suites"][suite].get("corpus")
+    if folder:
+        return os.path.normpath(os.path.join(EVAL_DIR, folder))
+    return corpus_module.CORPUS_DIR if suite == "hermetic" else None
+
+
+def _corpus_texts(directory: str = corpus_module.CORPUS_DIR) -> Dict[str, Optional[str]]:
     """Raw text of each corpus document, keyed by the name it is uploaded under."""
     texts = {}
-    for name in sorted(os.listdir(corpus_module.CORPUS_DIR)):
-        path = os.path.join(corpus_module.CORPUS_DIR, name)
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
         if not os.path.isfile(path) or name.startswith((".", "_")):
+            continue
+        if name.endswith(".pdf"):
+            # A real PDF: its extracted text, the same way the ingest parser reads it. Without PyMuPDF
+            # (the standard-library CI job) its spans are checked at run time instead.
+            try:
+                import pymupdf as fitz
+            except ImportError:
+                try:
+                    import fitz
+                except ImportError:
+                    texts[name] = None
+                    continue
+            with fitz.open(path) as document:
+                texts[name] = "\n".join(page.get_text() for page in document)
             continue
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
@@ -103,17 +126,18 @@ def cmd_validate(args) -> int:
             status = 2
             continue
         problems = validate_dataset(rows)
-        if suite == "hermetic":
-            texts = _corpus_texts()
+        directory = corpus_dir(config, suite)
+        if directory:
+            texts = _corpus_texts(directory)
             for name, text in list(texts.items()):
-                if name.endswith(".csv"):
+                if text is not None and name.endswith(".csv"):
                     texts[name] = _csv_as_table(text)
             for row in rows:
                 for item in row.get("expected") or []:
                     name = item.get("document")
                     if name not in texts:
                         problems.append(f"{row['id']}: unknown corpus document {name!r}")
-                    elif not span_in_text(texts[name], item.get("answer_span") or ""):
+                    elif texts[name] is not None and not span_in_text(texts[name], item.get("answer_span") or ""):
                         problems.append(f"{row['id']}: answer_span not found in {name}: {item.get('answer_span')!r}")
         counts: Dict[str, int] = {}
         for row in rows:
@@ -172,7 +196,8 @@ def cmd_run(args) -> int:
     if args.embed_backend:
         os.environ["EMBED_BACKEND"] = args.embed_backend
     temp_dir = None
-    if args.suite == "hermetic":
+    directory = corpus_dir(config, args.suite)
+    if directory:
         temp_dir = args.data_dir or corpus_module.fresh_data_dir()
         os.environ["NEEDLE_DATA_DIR"] = temp_dir
     elif args.data_dir:
@@ -185,9 +210,9 @@ def cmd_run(args) -> int:
         from eval import report as report_module
         from eval import runner
 
-        if args.suite == "hermetic":
-            print(f"Building the hermetic index in {temp_dir} ...", file=sys.stderr)
-            built = corpus_module.build_index(temp_dir)
+        if directory:
+            print(f"Building the {args.suite} index in {temp_dir} ...", file=sys.stderr)
+            built = corpus_module.build_index(temp_dir, directory)
             print(f"  {len(built)} documents, {sum(d['chunks'] for d in built.values())} chunks", file=sys.stderr)
             unreachable = runner.unreachable_spans(rows)
             if unreachable:
@@ -234,7 +259,7 @@ def cmd_run(args) -> int:
         fingerprint = {
             "embedding": status_model(),
             "dataset_sha256": _sha256(dataset_path),
-            "corpus": corpus_module.corpus_fingerprint() if args.suite == "hermetic" else None,
+            "corpus": corpus_module.corpus_fingerprint(directory) if directory else None,
             "selection": {"ids": args.ids, "tags": args.tags, "limit": args.limit},
         }
         comparable = bool(baseline) and baseline.get("fingerprint") == fingerprint

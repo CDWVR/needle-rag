@@ -1,6 +1,6 @@
 # Deploying the public demo on Railway
 
-This puts Needle online as a **read-only public demo**: visitors browse a set of fictional sample
+This puts Needle online as a **read-only public demo**: visitors browse a small set of machine-learning sample
 documents and ask questions; only you (with the access token) can upload, delete, or change
 settings. No private data is public, and spend is capped.
 

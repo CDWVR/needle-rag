@@ -215,15 +215,26 @@ def _settings_with_drift():
 
 
 def _eval_summary(suite: str) -> Optional[dict]:
+    """The latest eval run on this server, or else the baseline committed to the repo (so a fresh
+    deploy still shows the measured quality of this release, labelled as a baseline)."""
     path = os.path.join(EVAL_REPORTS_DIR, suite, "latest.json")
+    source = "run"
     if not os.path.exists(path):
-        return None
+        path = next((p for p in (os.path.join(ROOT, "eval", "baselines", f"{suite}-{tier}.json") for tier in ("full", "offline")) if os.path.exists(p)), "")
+        source = "baseline"
+        if not path:
+            return None
     try:
         with open(path, encoding="utf-8") as handle:
             report = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return None
-    return {key: report.get(key) for key in ("suite", "tier", "finished_at", "commit", "questions", "metrics", "gate")}
+    summary = {key: report.get(key) for key in ("suite", "tier", "finished_at", "commit", "questions", "metrics", "gate")}
+    summary["source"] = source
+    if source == "baseline":
+        summary["finished_at"] = report.get("recorded_at")
+        summary["questions"] = summary["questions"] or (report.get("metrics") or {}).get("questions")
+    return summary
 
 
 def _analytics_days(days: int) -> int:
@@ -267,6 +278,7 @@ def read_session(request: Request):
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, request: Request, response: Response):
     security.rate_limit(request, "login")
+    security.limiter.check("login_global", "all")
     if not security.token_matches(payload.token.strip()):
         log.warning("Failed sign-in from %s", security.client_id(request))
         raise HTTPException(status_code=401, detail="That access token is not valid.")
