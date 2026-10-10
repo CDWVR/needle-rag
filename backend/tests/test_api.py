@@ -106,6 +106,34 @@ class ReadEndpointTests(unittest.TestCase):
             self.assertEqual(client.get(path, headers=BEARER).status_code, 200, path)
         self.assertEqual(client.get("/api/analytics?days=5", headers=BEARER).status_code, 400)
 
+    def test_analytics_has_chart_data(self):
+        report = TestClient(main.app).get("/api/analytics?days=30", headers=BEARER).json()
+        self.assertEqual(set(report["outcomes"]), {"answered", "no_coverage", "check_failed", "error"})
+        self.assertEqual(len(report["hours_utc"]), 24)
+        self.assertEqual(len(report["relevance_bins"]), 5)
+        self.assertIsInstance(report["latency_series"], list)
+        self.assertIsInstance(report["top_documents"], list)
+
+    def test_quality_gate_falls_back_to_the_committed_baseline(self):
+        hermetic = TestClient(main.app).get("/api/eval/latest", headers=BEARER).json()["hermetic"]
+        self.assertIsNotNone(hermetic)
+        self.assertIn(hermetic["source"], {"run", "baseline"})
+        self.assertTrue(hermetic["metrics"]["retrieval"])
+
+
+class GlobalLoginLimitTests(unittest.TestCase):
+    def test_sign_in_attempts_are_capped_across_all_clients(self):
+        """Even if every attempt claims a different client address, guessing stops."""
+        client = TestClient(main.app)
+        main.security.limiter._hits.clear()
+        statuses = []
+        for i in range(32):
+            main.security.limiter._hits.pop(("login", "testclient"), None)  # as if each try came from a new address
+            statuses.append(client.post("/api/auth/login", json={"token": f"wrong-token-{i:04d}-padding"}).status_code)
+        self.assertEqual(statuses[:30], [401] * 30)
+        self.assertEqual(statuses[30:], [429, 429])
+        main.security.limiter._hits.clear()
+
 
 class ConversationTests(unittest.TestCase):
     """Threads can be renamed, deleted, and are only listed once they hold a message."""

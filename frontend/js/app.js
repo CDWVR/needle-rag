@@ -1,5 +1,6 @@
 import { api, ApiError, errorMessage, request } from "./api.js";
 import { renderMarkdown, plainText, escapeHtml } from "./markdown.js";
+import { outcomeBar, columnChart, lineChart, rankBars, wireTips } from "./charts.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -425,8 +426,168 @@ function countUp(root) {
   });
 }
 
+// The Needle mark assembling and folding in a loop: the loading symbol everywhere something waits.
+const loader = (size = "") => `<span class="needle-loader ${size}" aria-hidden="true">${LOGO_SVG}</span>`;
+
+// A pill slides between the options of a segmented control. Analytics re-renders its control on
+// each click, so the last position is remembered per control and the new pill starts from there.
+const segmentedFrom = new Map();
+function initSegmented(group) {
+  if (!group) return;
+  group.classList.add("has-pill");
+  let pill = $(".seg-pill", group);
+  if (!pill) {
+    pill = document.createElement("i");
+    pill.className = "seg-pill";
+    pill.setAttribute("aria-hidden", "true");
+    group.prepend(pill);
+  }
+  const put = ({ x, w }) => {
+    pill.style.transform = `translateX(${x}px)`;
+    pill.style.width = `${w}px`;
+  };
+  const place = (animate) => {
+    const on = $("button.active", group);
+    if (!on || !group.offsetParent) return;
+    pill.classList.toggle("still", !animate);
+    const at = { x: on.offsetLeft, w: on.offsetWidth };
+    put(at);
+    segmentedFrom.set(group.id, at);
+  };
+  const from = segmentedFrom.get(group.id);
+  if (from) {
+    pill.classList.add("still");
+    put(from);
+    void pill.offsetWidth; // commit the old position so the move animates
+    place(true);
+  } else place(false);
+  const watch = new MutationObserver(() => place(true));
+  $$("button", group).forEach((button) => watch.observe(button, { attributeFilter: ["class"] }));
+  document.fonts?.ready.then(() => place(false));
+}
+
+// The rail's active highlight is one shape that slides to the page you open.
+function moveRailPill(animate = true) {
+  const rail = $(".rail");
+  let pill = $(".rail-pill", rail);
+  if (!pill) {
+    pill = document.createElement("i");
+    pill.className = "rail-pill gone";
+    pill.setAttribute("aria-hidden", "true");
+    rail.prepend(pill);
+  }
+  const on = $(".icon-btn.active", rail);
+  if (!on || !on.offsetParent) {
+    pill.classList.add("gone");
+    rail.classList.remove("has-pill");
+    return;
+  }
+  rail.classList.add("has-pill");
+  const a = rail.getBoundingClientRect();
+  const b = on.getBoundingClientRect();
+  pill.classList.toggle("still", !animate || pill.classList.contains("gone"));
+  pill.classList.remove("gone");
+  pill.style.transform = `translate(${b.left - a.left}px, ${b.top - a.top}px)`;
+  pill.style.width = `${b.width}px`;
+  pill.style.height = `${b.height}px`;
+}
+
+// Native selects keep the value and the form wiring; this draws a styled button and option list
+// over each one, with the keyboard behavior of a listbox.
+function enhanceSelect(select) {
+  if (select.dataset.enhanced) return;
+  select.dataset.enhanced = "1";
+  const wrap = document.createElement("div");
+  wrap.className = "select";
+  select.after(wrap);
+  wrap.append(select);
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "select-button";
+  button.id = `${select.id}Button`;
+  button.setAttribute("aria-haspopup", "listbox");
+  button.setAttribute("aria-expanded", "false");
+  const list = document.createElement("ul");
+  list.className = "select-list";
+  list.id = `${select.id}List`;
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
+  button.setAttribute("aria-controls", list.id);
+  const label = $(`label[for="${select.id}"]`);
+  if (label) {
+    label.htmlFor = button.id;
+    label.id ||= `${select.id}Label`;
+    list.setAttribute("aria-labelledby", label.id);
+    button.setAttribute("aria-labelledby", `${label.id} ${button.id}`);
+  }
+  wrap.append(button, list);
+  let active = 0;
+  const isOpen = () => !list.hidden;
+  const paint = () => {
+    button.innerHTML = `<span>${escapeHtml(select.selectedOptions[0]?.text || "")}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
+    list.innerHTML = [...select.options]
+      .map(
+        (option, i) =>
+          `<li role="option" id="${list.id}-${i}" data-index="${i}" aria-selected="${option.selected}" class="${i === active ? "active" : ""}"><span>${escapeHtml(option.text)}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></li>`
+      )
+      .join("");
+    if (isOpen()) button.setAttribute("aria-activedescendant", `${list.id}-${active}`);
+    else button.removeAttribute("aria-activedescendant");
+  };
+  const open = (yes) => {
+    if (yes) active = Math.max(0, select.selectedIndex);
+    list.hidden = !yes;
+    wrap.classList.toggle("open", yes);
+    button.setAttribute("aria-expanded", String(yes));
+    paint();
+  };
+  const choose = (i) => {
+    if (select.selectedIndex !== i) {
+      select.selectedIndex = i;
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    open(false);
+  };
+  const move = (i) => {
+    active = Math.min(Math.max(i, 0), select.options.length - 1);
+    paint();
+  };
+  button.addEventListener("click", () => open(!isOpen()));
+  button.addEventListener("blur", () => isOpen() && open(false));
+  button.addEventListener("keydown", (event) => {
+    const keys = {
+      ArrowDown: () => (isOpen() ? move(active + 1) : open(true)),
+      ArrowUp: () => (isOpen() ? move(active - 1) : open(true)),
+      Home: () => isOpen() && move(0),
+      End: () => isOpen() && move(select.options.length - 1),
+      Enter: () => (isOpen() ? choose(active) : open(true)),
+      " ": () => (isOpen() ? choose(active) : open(true)),
+      Escape: () => isOpen() && open(false),
+    };
+    if (!keys[event.key] || (event.key === "Escape" && !isOpen())) return;
+    event.preventDefault();
+    event.stopPropagation();
+    keys[event.key]();
+  });
+  list.addEventListener("mousedown", (event) => event.preventDefault()); // keep focus on the button
+  list.addEventListener("click", (event) => {
+    const item = event.target.closest("li");
+    if (item) choose(Number(item.dataset.index));
+  });
+  list.addEventListener("mousemove", (event) => {
+    const item = event.target.closest("li");
+    if (item && Number(item.dataset.index) !== active) move(Number(item.dataset.index));
+  });
+  select.refreshCustom = paint;
+  paint();
+}
+
 const skeletonPage = () => `
   <div class="page-content skeleton-page" aria-hidden="true">
+    <div class="sk-loader">${loader("large")}</div>
     <div class="sk sk-eyebrow"></div><div class="sk sk-title"></div><div class="sk sk-line"></div>
     <div class="stat-grid">${'<div class="sk sk-card"></div>'.repeat(4)}</div>
     <div class="sk sk-panel"></div>
@@ -510,6 +671,7 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
     if (on) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
+  moveRailPill();
   $("#currentCrumb").textContent = pageLabels[page] || "Ask";
   setTitle(page === "ask" ? activeConversationTitle() : pageLabels[page]);
   setSidebar(false);
@@ -897,7 +1059,7 @@ function pendingHtml(pending) {
   ).join("");
   return `
     <section class="turn pending" id="turn-pending" aria-label="Answering">
-      <div class="answer-kicker"><span>Working on it</span></div>
+      <div class="answer-kicker">${loader("small")}<span>Working on it</span></div>
       <h2 class="turn-question">${escapeHtml(pending.question)}</h2>
       <div class="progress-strip"><ol>${steps}</ol><span class="elapsed" id="pendingElapsed">0s</span></div>
       <p class="status-line" id="pendingMessage" role="status">${escapeHtml(pending.message)}</p>
@@ -1910,6 +2072,7 @@ async function renderKnowledge() {
       paintDocuments();
     })
   );
+  initSegmented($("#docFilter"));
   $$("[data-sort]", $("#page-knowledge")).forEach((button) =>
     listen(button, "click", () => {
       const key = button.dataset.sort;
@@ -2393,7 +2556,7 @@ async function renderPipeline() {
             </div>
           </section>
           <section class="panel">
-            <div class="panel-head"><div><h2>Quality gate</h2><p>${latestEval ? `Hermetic eval · ${escapeHtml(latestEval.tier)} tier · ${escapeHtml(when(latestEval.finished_at))}` : "No eval run recorded yet"}</p></div>${latestEval ? `<span class="status ${latestEval.gate?.passed ? "" : "sync"}">${latestEval.gate?.passed ? "Pass" : "Fail"}</span>` : ""}</div>
+            <div class="panel-head"><div><h2>Quality gate</h2><p>${qualityCaption(latestEval)}</p></div>${qualityStatus(latestEval)}</div>
             ${evalPanel(latestEval)}
           </section>
         </div>
@@ -2421,21 +2584,42 @@ async function renderPipeline() {
   setTitle("Index pipeline");
 }
 
+// The quality gate is Needle's built-in exam: test questions with known answers, run before a change
+// ships. A change that makes retrieval or answers worse fails the gate.
+function qualityCaption(report) {
+  if (!report) return "Not measured on this server yet";
+  const n = report.questions || report.metrics?.questions;
+  const day = report.finished_at ? dayLabel(new Date(report.finished_at)) : "";
+  return report.source === "baseline"
+    ? `Release baseline · ${n || 117} test questions${day ? ` · ${day}` : ""}`
+    : `Last test run${n ? ` · ${n} questions` : ""}${day ? ` · ${day}` : ""}`;
+}
+
+function qualityStatus(report) {
+  if (!report) return "";
+  if (report.source === "baseline") return `<span class="status">Baseline</span>`;
+  if (!report.gate) return "";
+  return `<span class="status ${report.gate.passed ? "" : "sync"}">${report.gate.passed ? "Passed" : "Failed"}</span>`;
+}
+
 function evalPanel(report) {
   if (!report) {
-    return `<div class="form-block"><p>Run <code>python -m eval run</code> in <code>backend/</code> to measure retrieval and answer quality on the repo's test corpus.</p></div>`;
+    return `<div class="form-block quality-empty">
+      <p>The quality gate is a built-in exam: test questions with known answers that Needle must get right before a change ships. Results appear here after a test run.</p>
+      ${isOwner() ? `<details class="dev-note"><summary>How to run it</summary><p>On the server, in <code>backend/</code>: <code>python -m eval run</code></p></details>` : ""}
+    </div>`;
   }
   const retrieval = report.metrics?.retrieval || {};
   const answers = report.metrics?.answers;
   const abstain = report.metrics?.abstention;
   const rows = [
-    ["Recall@5", "Expected passage in the top five", percent(retrieval.hit_at_5)],
-    ["MRR", "Rank of the first relevant passage", retrieval.mrr == null ? "—" : Number(retrieval.mrr).toFixed(2)],
+    ["Right passage found", "The correct passage was in the top five results", percent(retrieval.hit_at_5)],
+    ["Ranked first", "How often the correct passage came first", percent(retrieval.hit_at_1)],
   ];
   if (answers) {
-    rows.push(["Answer rate", "Answerable questions released as grounded", percent(answers.answer_rate)]);
-    rows.push(["Key-fact recall", "Facts present in released answers", percent(answers.key_fact_recall)]);
-    rows.push(["Abstention recall", "Unanswerable questions withheld", percent(abstain?.recall)]);
+    rows.push(["Answered", "Answerable questions released with sources", percent(answers.answer_rate)]);
+    rows.push(["Facts correct", "Required facts present in released answers", percent(answers.key_fact_recall)]);
+    rows.push(["Declined correctly", "Unanswerable questions held back instead of guessed", percent(abstain?.recall)]);
   }
   return `<div class="metric-list">${rows
     .map(([label, hint, value]) => `<div class="metric-row"><div><strong>${label}</strong><p>${hint}</p></div><div class="metric-score">${value}</div></div>`)
@@ -2449,7 +2633,7 @@ async function refreshIndex(override = false) {
     "Refreshing the index",
     `<p>Needle builds a new index version beside the live one and switches over only if it's complete and search quality holds up. Questions keep working while this runs.</p>
      <ol class="refresh-steps"><li>Copy every passage into a new version</li><li>Embed passages with the current settings</li><li>Compare recall on your golden questions</li><li>Publish the new version</li></ol>
-     <div class="indeterminate" role="progressbar" aria-label="Refreshing the index"><i></i></div>
+     <div class="refresh-progress">${loader("small")}<div class="indeterminate" role="progressbar" aria-label="Refreshing the index"><i></i></div></div>
      <p class="refresh-elapsed" id="refreshElapsed">Started just now</p>`,
     [],
     { locked: true }
@@ -2589,15 +2773,50 @@ async function renderAnalytics() {
             <div class="metric-row"><div><strong>Citation coverage</strong><p>Share of released answers whose text cites a numbered source</p></div><div class="metric-score">${percent(report.citation_coverage)}</div></div>
             <div class="metric-row"><div><strong>Average relevance</strong><p>Best Jev score per question</p></div><div class="metric-score">${report.mean_relevance == null ? "—" : Number(report.mean_relevance).toFixed(2)}</div></div>
             <div class="metric-row"><div><strong>Retrieval latency</strong><p>Median search + rerank time</p></div><div class="metric-score">${report.retrieval_p50_ms == null ? "—" : escapeHtml(seconds(report.retrieval_p50_ms))}</div></div>
-            <div class="metric-row"><div><strong>Fallback precision</strong><p>${evalReport ? "Correct withholds in the last eval" : "Run the full eval to measure"}</p></div><div class="metric-score">${percent(abstainPrecision)}</div></div>
+            <div class="metric-row"><div><strong>Fallback precision</strong><p>${evalReport ? "Of the questions held back in testing, how many truly had no answer" : "Measured by the test questions"}</p></div><div class="metric-score">${percent(abstainPrecision)}</div></div>
           </div>
         </section>
       </div>
+      <div class="viz-grid">
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>How questions ended</h2><p>Every question in the last ${state.analyticsDays} days, by outcome</p></div></div>
+          <div class="viz-body">${outcomeBar(report.outcomes || {})}</div>
+        </section>
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>Response time</h2><p>Time to an answer, per day: the median and the slowest 5%</p></div></div>
+          <div class="viz-body">${lineChart({
+            points: (report.latency_series || []).map((p) => ({ ...p, label: shortDay(p.day) })),
+            series: [
+              { key: "p50_ms", label: "Median", color: "#2a78d6" },
+              { key: "p95_ms", label: "Slowest 5%", color: "#eb6834" },
+            ],
+            ariaLabel: "Daily median and 95th percentile response time",
+            format: (ms) => (ms == null ? "—" : seconds(ms)),
+          })}</div>
+        </section>
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>When people ask</h2><p>Questions by hour of the day, in your time zone</p></div></div>
+          <div class="viz-body">${hoursChart(report.hours_utc || [])}</div>
+        </section>
+        <section class="panel viz-panel">
+          <div class="panel-head"><div><h2>Evidence strength</h2><p>The best relevance score each question got; low scores usually mean a coverage gap</p></div></div>
+          <div class="viz-body">${columnChart({
+            values: (report.relevance_bins || []).map((b) => b.count),
+            labels: (report.relevance_bins || []).map((b) => `${b.from.toFixed(1)}–${b.to.toFixed(1)}`),
+            tips: (report.relevance_bins || []).map((b) => [`Relevance ${b.from.toFixed(1)}–${b.to.toFixed(1)}`, `${b.count} question${b.count === 1 ? "" : "s"}`]),
+            ariaLabel: "Questions by best evidence relevance",
+          })}</div>
+        </section>
+        <section class="panel viz-panel wide">
+          <div class="panel-head"><div><h2>Most-used documents</h2><p>How many answers drew on each document</p></div></div>
+          <div class="viz-body">${rankBars((report.top_documents || []).map((d) => ({ label: d.name, value: d.answers })), { unit: "answer" })}</div>
+        </section>
+      </div>
       <section class="panel" style="margin-top:14px">
-        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>No strong passage: the documents don't cover it. Failed the check: the draft was the problem, so asking again may work.</p></div></div>
-        <div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best match</th><th>Last asked</th><th><span class="sr-only">Action</span></th></tr></thead><tbody>
-          ${gaps.map((gap, index) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Failed the check" : "No strong passage"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : `${Number(gap.best_similarity).toFixed(2)} similarity`}</td><td>${escapeHtml(when(gap.last_seen))}</td><td><button class="btn small" type="button" data-gap="${index}" ${gap.outcome === "check_failed" ? "" : "data-owner"}>${gap.outcome === "check_failed" ? "Ask again" : "Add a source"}</button></td></tr>`).join("") || `<tr><td colspan="6"><p class="empty-note">No withheld questions in this range.</p></td></tr>`}
-        </tbody></table></div>
+        <div class="panel-head"><div><h2>Knowledge gaps</h2><p>Questions Needle held back instead of guessing. “Not in the documents”: nothing strong enough was found, so add a source that covers it. “Failed the check”: a draft was written but not backed by the passages, so asking again (or rewording) may work.</p></div></div>
+        ${state.role === "visitor" ? `<p class="empty-note gap-private">In the public demo, visitors’ questions stay private, so this list is visible only to the owner. The totals above include everyone’s questions.</p>` : `<div class="table-scroll"><table class="data-table"><thead><tr><th>Question</th><th>Why</th><th>Attempts</th><th>Best match</th><th>Last asked</th><th><span class="sr-only">Action</span></th></tr></thead><tbody>
+          ${gaps.map((gap, index) => `<tr><td><strong>${escapeHtml(gap.query)}</strong></td><td>${gap.outcome === "check_failed" ? "Failed the check" : "Not in the documents"}</td><td>${gap.attempts}</td><td>${gap.best_similarity == null ? "—" : `${Number(gap.best_similarity).toFixed(2)} similarity`}</td><td>${escapeHtml(when(gap.last_seen))}</td><td><button class="btn small" type="button" data-gap="${index}" ${gap.outcome === "check_failed" ? "" : "data-owner"}>${gap.outcome === "check_failed" ? "Ask again" : "Add a source"}</button></td></tr>`).join("") || `<tr><td colspan="6"><p class="empty-note">No withheld questions in this range. Gaps appear here when a question isn’t covered by your documents or an answer fails the grounding check.</p></td></tr>`}
+        </tbody></table></div>`}
       </section>
     </div>`;
   $$("#range button").forEach((button) =>
@@ -2616,8 +2835,24 @@ async function renderAnalytics() {
     })
   );
   wireChart();
+  wireTips($("#page-analytics"));
+  initSegmented($("#range"));
   if (first) countUp($("#page-analytics"));
   setTitle("Analytics");
+}
+
+// Questions by local hour: the server counts UTC hours, the browser shifts them.
+function hoursChart(utc) {
+  const offset = Math.round(-new Date().getTimezoneOffset() / 60);
+  const local = Array.from({ length: 24 }, (_, hour) => utc[(hour - offset + 48) % 24] || 0);
+  const label = (h) => `${h % 12 || 12}${h < 12 ? "am" : "pm"}`;
+  return columnChart({
+    values: local,
+    labels: local.map((_, h) => label(h)),
+    tips: local.map((n, h) => [`${label(h)}–${label((h + 1) % 24)}`, `${n} question${n === 1 ? "" : "s"}`]),
+    ariaLabel: "Questions by hour of the day",
+    every: 6,
+  });
 }
 
 function wireChart() {
@@ -2685,6 +2920,7 @@ function applySettingsForm() {
   settingFields.forEach(([id, key]) => {
     const node = $(`#${id}`, page);
     if (node && document.activeElement !== node) node.value = form[key] ?? "";
+    node?.refreshCustom?.();
   });
   $$("[data-switch]", page).forEach((button) => {
     const on = Boolean(form[button.dataset.switch]);
@@ -2817,9 +3053,10 @@ async function renderSettings() {
         </div>
       </div>
     </div>`;
+  const page = $("#page-settings");
+  $$("select", page).forEach(enhanceSelect);
   applySettingsForm();
   syncSaveBar();
-  const page = $("#page-settings");
   $$(".settings-nav button", page).forEach((button) =>
     listen(button, "click", () => {
       $$(".settings-nav button", page).forEach((item) => {
@@ -3243,9 +3480,18 @@ function applyRole(session) {
   $("#demoBadge").hidden = !state.demo;
 }
 
+// The splash in index.html covers the first load; it fades once there is something to show.
+function hideSplash() {
+  const splash = $("#bootSplash");
+  if (!splash) return;
+  splash.classList.add("done");
+  setTimeout(() => splash.remove(), reducedMotion() ? 0 : 420);
+}
+
 async function boot() {
   const session = await api.session();
   if (!session.authenticated) {
+    hideSplash();
     showSignIn();
     return;
   }
@@ -3253,6 +3499,11 @@ async function boot() {
   await refreshShell();
   renderConversation();
   if (location.hash && location.hash !== "#ask") routeFromHash();
+  hideSplash();
+  moveRailPill(false);
 }
 
-boot().catch((err) => notify(err.message, { type: "error" }));
+listen(window, "resize", () => moveRailPill(false));
+boot()
+  .catch((err) => notify(err.message, { type: "error" }))
+  .finally(hideSplash);

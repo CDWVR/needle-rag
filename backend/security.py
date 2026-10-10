@@ -242,6 +242,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 RATE_LIMITS = {
     "login": (10, 300),     # 10 attempts per 5 minutes: slows token guessing
+    # Across all clients: a backstop for when the per-client key can be spoofed (a proxy that
+    # trusts any X-Forwarded-For). The owner signs in rarely; 30 tries in 5 minutes is plenty.
+    "login_global": (30, 300),
     "chat": (30, 60),
     "visitor_chat": (6, 60),        # public demo: a few questions a minute...
     "visitor_chat_hour": (40, 3600),  # ...and a bounded number per hour, per client
