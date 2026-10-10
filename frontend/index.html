@@ -4,30 +4,31 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Needle — a source-grounded knowledge assistant workspace." />
-  <title>Needle — Knowledge Workspace</title>
+  <title>Ask · Needle</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="app" id="app">
     <nav class="rail" aria-label="Primary navigation">
-      <button class="mark" id="homeMark" aria-label="Ask home" data-page="ask">N</button>
+      <button class="mark" id="homeMark" type="button" aria-label="Ask home" data-page="ask"><svg viewBox="0 0 64 64" aria-hidden="true"><path fill="#F2F0E8" d="M10 18 24 4v52H10Z"/><path fill="#F2F0E8" d="M40 8h14v38L40 60Z"/><path fill="#F2F0E8" d="M24 48 40 32V16L24 32Z"/><path class="mark-fold" fill="#C7F43D" d="M24 32 40 16v16Z"/><path fill="#111411" d="M40 16h-6l6 6Z"/></svg></button>
       <div class="rail-nav">
-        <button class="icon-btn active" aria-label="Ask" data-tip="Ask" data-page="ask">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8M8 13h5"/></svg>
+        <button class="icon-btn active" type="button" aria-label="Ask" data-tip="Ask" data-page="ask">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8M8 13h5"/></svg><span class="rail-label">Ask</span>
         </button>
-        <button class="icon-btn" aria-label="Knowledge base" data-tip="Knowledge base" data-page="knowledge">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <button class="icon-btn" type="button" aria-label="Knowledge base" data-tip="Knowledge base" data-page="knowledge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span class="rail-label">Sources</span>
         </button>
-        <button class="icon-btn" aria-label="Index pipeline" data-tip="Index pipeline" data-page="pipeline">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M9 6h4a4 4 0 0 1 4 4v5M15 18h-4a4 4 0 0 1-4-4V9"/></svg>
+        <button class="icon-btn" type="button" aria-label="Index pipeline" data-tip="Index pipeline" data-page="pipeline">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M9 6h4a4 4 0 0 1 4 4v5M15 18h-4a4 4 0 0 1-4-4V9"/></svg><span class="rail-label">Pipeline</span>
         </button>
-        <button class="icon-btn" aria-label="Analytics" data-tip="Analytics" data-page="analytics">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/></svg>
+        <button class="icon-btn" type="button" aria-label="Analytics" data-tip="Analytics" data-page="analytics">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/></svg><span class="rail-label">Analytics</span>
         </button>
       </div>
       <div class="rail-bottom">
-        <button class="icon-btn" aria-label="Settings" data-tip="Settings" data-page="settings" data-owner>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.6.9 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        <button class="icon-btn" type="button" aria-label="Settings" data-tip="Settings" data-page="settings" data-owner>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.6.9 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span class="rail-label">Settings</span>
         </button>
       </div>
     </nav>
@@ -35,11 +36,15 @@
     <header class="topbar">
       <div class="crumbs"><span id="workspaceName">Needle</span><span class="slash">/</span><strong id="currentCrumb">Ask</strong></div>
       <div class="top-actions">
+        <button class="palette-trigger" id="paletteTrigger" type="button" aria-label="Open command menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>Jump to…</span><kbd class="shortcut">Ctrl K</kbd></button>
         <button class="threads-toggle" id="threadsToggle" type="button">Threads</button>
         <button class="mobile-source-toggle" id="sourceToggle" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>Sources</button>
         <div class="demo-badge" id="demoBadge" hidden>PUBLIC DEMO</div>
         <div class="sync-pill" id="syncPill"><i class="live-dot"></i> <span id="syncLabel">INDEX</span></div>
-        <div class="avatar" id="avatar" aria-label="Profile">OP</div>
+        <div class="account">
+          <button class="avatar" id="avatar" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="accountMenu" aria-label="Account">OP</button>
+          <div class="account-menu" id="accountMenu" role="menu" hidden></div>
+        </div>
       </div>
     </header>
 
@@ -47,19 +52,18 @@
       <div class="section-eyebrow">Private workspace</div>
       <div class="sidebar-title-row">
         <h1 id="sidebarTitle">Ask your<br>knowledge.</h1>
-        <button class="new-chat" id="newChat" type="button" aria-label="New conversation">
+        <button class="new-chat" id="newChat" type="button" aria-label="New conversation" data-tip="New conversation">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
       <label class="searchbox">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
         <input id="threadSearch" type="search" placeholder="Search conversations" aria-label="Search conversations" />
-        <kbd id="searchShortcut">Ctrl K</kbd>
       </label>
       <div class="thread-label"><span class="section-eyebrow">Conversations</span><span id="threadCount">0</span></div>
       <div class="thread-list" id="threadList"></div>
       <section class="corpus-card" aria-labelledby="corpus-title">
-        <div class="corpus-head"><strong id="corpus-title">Knowledge base</strong><button type="button" id="openKnowledge" aria-label="Open knowledge base">↗</button></div>
+        <div class="corpus-head"><strong id="corpus-title">Knowledge base</strong><button type="button" id="openKnowledge" aria-label="Open knowledge base">Open →</button></div>
         <div id="corpusList"></div>
       </section>
     </aside>
@@ -70,22 +74,28 @@
     <section class="workspace-page" id="page-analytics" data-view="analytics"></section>
     <section class="workspace-page" id="page-settings" data-view="settings"></section>
 
-    <main class="main">
+    <main class="main" id="main">
       <div class="conversation" id="conversation">
-        <div class="conversation-inner" id="conversationInner"></div>
+        <div class="conversation-inner" id="conversationInner" aria-live="polite" aria-busy="false"></div>
       </div>
       <div class="composer-wrap">
         <form class="composer" id="askForm">
-          <textarea id="askInput" rows="1" placeholder="Ask across your knowledge base…" aria-label="Ask a question"></textarea>
+          <textarea id="askInput" rows="1" placeholder="Ask across your knowledge base…" aria-label="Ask a question" aria-describedby="composerHint"></textarea>
           <div class="composer-bottom">
             <div class="composer-tools">
-              <button type="button" class="tool-button" id="addContext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg><span id="contextLabel">Add context</span></button>
-              <button type="button" class="tool-button" id="voiceButton"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 20v2M8 22h8"/><rect x="8" y="2" width="8" height="14" rx="4"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/></svg><span>Voice</span></button>
+              <button type="button" class="tool-button scope-button" id="addContext" aria-haspopup="listbox" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span class="scope-prefix">Search in</span><span id="contextLabel">All documents</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 9 6 6 6-6"/></svg></button>
+              <button type="button" class="tool-button voice-button" id="voiceButton"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 20v2M8 22h8"/><rect x="8" y="2" width="8" height="14" rx="4"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/></svg><span id="voiceLabel">Voice</span><i class="voice-level" id="voiceLevel" aria-hidden="true"></i></button>
             </div>
-            <button class="send" type="submit" aria-label="Send question"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 14-8-5 16-3-6-6-2zM11 14l3-3"/></svg></button>
+            <div class="composer-send">
+              <span class="composer-hint" id="composerHint">Enter to send · Shift+Enter for a new line</span>
+              <button class="send" id="sendButton" type="submit" aria-label="Send question">
+                <svg class="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 14-8-5 16-3-6-6-2zM11 14l3-3"/></svg>
+                <svg class="icon-stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg>
+              </button>
+            </div>
           </div>
         </form>
-        <div class="context-menu" id="contextMenu" hidden></div>
+        <div class="context-menu" id="contextMenu" role="listbox" aria-label="Search in" hidden></div>
         <div class="legal">Answers are generated from your indexed sources. Verify high-impact decisions.</div>
       </div>
     </main>
@@ -97,16 +107,25 @@
       </div>
       <div id="inspectorBody"></div>
     </aside>
+    <div class="scrim" id="scrim" hidden></div>
 
-    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="toast-stack" id="toasts" role="status" aria-live="polite"></div>
     <div class="modal-root" id="modal" hidden>
-      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalBody">
         <h3 id="modalTitle"></h3>
         <div id="modalBody"></div>
         <div class="modal-actions" id="modalActions"></div>
       </div>
     </div>
-    <input id="fileInput" type="file" hidden accept=".pdf,.txt,.md,.text,.docx,.pptx,.xlsx,.csv" />
+    <div class="palette-root" id="palette" hidden>
+      <div class="palette" role="dialog" aria-modal="true" aria-label="Command menu">
+        <div class="palette-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="paletteInput" type="text" placeholder="Jump to a page, document, or conversation…" aria-label="Search commands" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="paletteList" /></div>
+        <div class="palette-list" id="paletteList" role="listbox"></div>
+        <div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>
+      </div>
+    </div>
+    <div class="drop-overlay" id="dropOverlay" hidden><div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 16V4m0 0-5 5m5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg><strong>Drop files to index them</strong><span>PDF, Word, PowerPoint, Excel, CSV, Markdown, or text</span></div></div>
+    <input id="fileInput" type="file" hidden multiple accept=".pdf,.txt,.md,.text,.docx,.pptx,.xlsx,.csv" />
   </div>
   <script type="module" src="/static/js/app.js"></script>
 </body>
