@@ -2532,8 +2532,12 @@ async function renderAnalytics() {
   const prior = report.prior || {};
   const max = Math.max(1, ...series.map((point) => Number(point.questions) || 0));
   const gaps = report.gaps || [];
-  const step = Math.max(1, Math.round(series.length / 6));
-  const labels = series.filter((_, index) => index % step === 0).map((point) => `<span>${escapeHtml(shortDay(point.day))}</span>`).join("");
+  const step = Math.max(1, Math.ceil(series.length / 6));
+  // Date labels sit under their own bars (and always include the most recent day).
+  const labelAt = (i) => `<span style="left:${(((i + 0.5) / series.length) * 100).toFixed(2)}%">${escapeHtml(shortDay(series[i].day))}</span>`;
+  const labelIdx = series.map((_, i) => i).filter((i) => (series.length - 1 - i) % step === 0);
+  const labels = labelIdx.map(labelAt).join("");
+  const ticks = [...new Set(max <= 4 ? Array.from({ length: max + 1 }, (_, i) => i) : [0, Math.round(max / 2), max])];
   const perDay = report.questions ? report.questions / (report.days || state.analyticsDays) : 0;
   const dailyAverage = perDay && perDay < 0.1 ? "<0.1" : perDay.toFixed(1);
   const evalReport = evals?.hermetic;
@@ -2542,7 +2546,6 @@ async function renderAnalytics() {
   const fewRatings = ratings > 0 && ratings < 10;
   const pct = (value) => (value == null ? null : Math.round(Number(value) * 1000) / 10);
   const countAttr = (value) => (value == null ? "" : `data-count="${value}" data-format="pct"`);
-  const half = Math.round(max / 2);
   $("#page-analytics").innerHTML = `
     <div class="page-content">
       <header class="page-header">
@@ -2565,14 +2568,18 @@ async function renderAnalytics() {
           ${
             report.questions
               ? `<div class="chart-wrap">
-                  <div class="chart-axis" aria-hidden="true"><span>${max}</span><span>${half && half !== max ? half : ""}</span><span>0</span></div>
-                  <div class="chart" id="chart" role="img" aria-label="${state.analyticsDays}-day bar chart: ${report.questions} questions, ${percent(report.grounded_rate)} grounded">${series
-                    .map(
-                      (point, i) =>
-                        `<div class="bar-group" data-day="${escapeHtml(shortDay(point.day))}" data-asked="${point.questions}" data-grounded="${point.grounded}" style="--i:${i}"><i class="bar" style="height:${Math.round(((Number(point.questions) || 0) / max) * 100)}%"></i><i class="bar secondary" style="height:${Math.round(((Number(point.grounded) || 0) / max) * 100)}%"></i></div>`
-                    )
-                    .join("")}<div class="chart-tip" id="chartTip" hidden></div></div>
-                </div><div class="chart-labels">${labels}</div>`
+                  <div class="plot" id="chart" role="img" aria-label="${state.analyticsDays}-day bar chart: ${report.questions} questions, ${percent(report.grounded_rate)} grounded">
+                    ${ticks.map((t) => `<i class="grid" style="bottom:${((t / max) * 100).toFixed(2)}%"><span>${t}</span></i>`).join("")}
+                    <div class="bars">${series
+                      .map(
+                        (point, i) =>
+                          `<div class="bar-group" data-day="${escapeHtml(shortDay(point.day))}" data-asked="${point.questions}" data-grounded="${point.grounded}" style="--i:${i}"><i class="bar" style="height:${((Number(point.questions) || 0) / max) * 100}%"></i><i class="bar secondary" style="height:${((Number(point.grounded) || 0) / max) * 100}%"></i></div>`
+                      )
+                      .join("")}</div>
+                    <div class="chart-tip" id="chartTip" hidden></div>
+                  </div>
+                  <div class="plot-labels">${labels}</div>
+                </div>`
               : `<p class="empty-note">Ask a few questions to fill this chart.</p>`
           }
         </section>
@@ -2617,16 +2624,22 @@ function wireChart() {
   const chart = $("#chart");
   const tip = $("#chartTip");
   if (!chart || !tip) return;
+  const show = (group) => {
+    $$(".bar-group.on", chart).forEach((other) => other.classList.remove("on"));
+    group.classList.add("on");
+    tip.innerHTML = `<strong>${escapeHtml(group.dataset.day)}</strong><span><i class="key asked"></i>${group.dataset.asked} asked</span><span><i class="key grounded"></i>${group.dataset.grounded} grounded</span>`;
+    tip.hidden = false;
+    const half = tip.offsetWidth / 2;
+    const center = group.offsetLeft + group.offsetWidth / 2;
+    tip.style.left = `${Math.min(Math.max(center, half + 4), chart.clientWidth - half - 4)}px`;
+  };
+  const hide = () => {
+    tip.hidden = true;
+    $$(".bar-group.on", chart).forEach((group) => group.classList.remove("on"));
+  };
   $$(".bar-group", chart).forEach((group) => {
-    group.addEventListener("mouseenter", () => {
-      tip.innerHTML = `<strong>${escapeHtml(group.dataset.day)}</strong><span>${group.dataset.asked} asked</span><span>${group.dataset.grounded} grounded</span>`;
-      tip.hidden = false;
-      const left = group.offsetLeft + group.offsetWidth / 2;
-      tip.style.left = `${Math.min(Math.max(left, 60), chart.clientWidth - 60)}px`;
-    });
-    group.addEventListener("mouseleave", () => {
-      tip.hidden = true;
-    });
+    group.addEventListener("mouseenter", () => show(group));
+    group.addEventListener("mouseleave", hide);
   });
 }
 

@@ -1060,3 +1060,24 @@ mark.find.current { background: var(--acid); box-shadow: 0 0 0 2px var(--acid); 
 .composer:focus-within .composer-hint { opacity: 1; }
 @media (max-width: 1440px) { .scope-button .scope-prefix { display: none; } }
 @media (max-width: 1320px) { .composer-hint { display: none; } }
+
+/* Analytics chart: positions come from the data, so gridlines, numbers, bars and dates line up */
+.chart-wrap { display: block; position: relative; padding: 26px 24px 0 56px; }
+.plot { position: relative; height: 240px; }
+.plot .grid { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--line); }
+.plot .grid:first-of-type { border-top-style: solid; }
+.plot .grid span { position: absolute; left: -44px; width: 36px; top: 0; transform: translateY(-50%); text-align: right; font: 500 11.5px 'DM Mono', monospace; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 3px; }
+.bars .bar-group { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; justify-content: center; gap: 2px; position: relative; border-radius: 6px 6px 0 0; transition: background .15s; }
+.bars .bar-group.on { background: rgba(21,23,19,.05); }
+.bars .bar { flex: 0 1 8px; min-width: 3px; max-width: 9px; }
+.bar-group:hover .bar, .bar-group.on .bar { background: var(--ink); }
+.bar-group:hover .bar.secondary, .bar-group.on .bar.secondary { background: #aeb2a5; }
+.plot-labels { position: relative; height: 34px; margin-top: 8px; }
+.plot-labels span { position: absolute; top: 0; transform: translateX(-50%); font: 500 11.5px 'DM Mono', monospace; color: var(--muted); white-space: nowrap; }
+.plot .chart-tip { top: -6px; transform: translateX(-50%); }
+.chart-tip .key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.chart-tip .key.asked { background: var(--white); }
+.chart-tip .key.grounded { background: #aeb2a5; }
+@media (max-width: 820px) { .chart-wrap { padding: 22px 12px 0 40px; } .plot .grid span { left: -34px; width: 28px; } .bars { gap: 2px; } }
+.plot .chart-tip { animation: fade-in .12s both; }
