@@ -477,6 +477,34 @@ function revealWords(turn) {
   return total;
 }
 
+// Focus glow (see "Focus glow" in style.css): while someone types, the field (or the shell around it)
+// carries data-typing for about a second after each keystroke, which intensifies the glow.
+const GLOW_SHELLS = ".searchbox, .filter-field, .composer, .palette-search"; // SHELLS: keep in step with style.css
+const typingTimers = new WeakMap();
+document.addEventListener(
+  "input",
+  (event) => {
+    const field = event.target;
+    if (!(field instanceof HTMLElement) || !field.matches('input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"]), textarea')) return;
+    const node = field.closest(GLOW_SHELLS) || field;
+    node.setAttribute("data-typing", "");
+    clearTimeout(typingTimers.get(node));
+    typingTimers.set(node, setTimeout(() => node.removeAttribute("data-typing"), 1100));
+  },
+  true
+);
+document.addEventListener(
+  "focusout",
+  (event) => {
+    const node = event.target instanceof HTMLElement ? event.target.closest(GLOW_SHELLS) || event.target : null;
+    if (node?.hasAttribute?.("data-typing")) {
+      clearTimeout(typingTimers.get(node));
+      node.removeAttribute("data-typing");
+    }
+  },
+  true
+);
+
 // The Needle mark assembling and folding in a loop: the loading symbol everywhere something waits.
 const loader = (size = "") => `<span class="needle-loader ${size}" aria-hidden="true">${LOGO_SVG}</span>`;
 
