@@ -155,6 +155,23 @@ class SeedTests(unittest.TestCase):
         self.assertIn("rnn_basics.txt", [doc["name"] for doc in main.get_all_documents()])
 
 
+    def test_documents_built_by_an_older_ingest_are_rebuilt_once(self):
+        """A redeploy keeps the volume, so sample documents indexed before a change to the ingest
+        logic are re-indexed (new copy in first, old one out), and left alone afterwards."""
+        import demo
+
+        demo.seed_demo_corpus(main.workspace)
+        ids_before = {doc["name"]: doc["id"] for doc in main.get_all_documents()}
+        for document_id in ids_before.values():  # as if an earlier release had indexed them
+            main.workspace.conn.execute("UPDATE document_policy SET ingest_rev = 'old' WHERE document_id = ?", (document_id,))
+        main.workspace.conn.commit()
+        self.assertEqual(demo.seed_demo_corpus(main.workspace), len(ids_before))
+        after = {doc["name"]: doc["id"] for doc in main.get_all_documents()}
+        self.assertEqual(sorted(after), sorted(ids_before))  # nothing lost, nothing duplicated
+        self.assertTrue(all(after[name] != ids_before[name] for name in after))
+        self.assertEqual(demo.seed_demo_corpus(main.workspace), 0)  # and only once
+
+
 class OwnerTests(unittest.TestCase):
     def test_owner_signs_in_and_changes_settings(self):
         client = TestClient(main.app)

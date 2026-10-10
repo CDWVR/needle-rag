@@ -28,6 +28,10 @@ from pipeline_logic import contextual_passage, index_card, passage_hosts, tokeni
 
 log = logging.getLogger("needle")
 
+# Bump when how documents are split or folded changes. The public demo re-indexes its sample documents
+# when the revision recorded for them is older, so a redeploy onto an existing volume picks up the change.
+INGEST_REVISION = "fold-1"
+
 
 @dataclass
 class DocumentInfo:
