@@ -675,6 +675,10 @@ const skeletonPage = () => `
 // The first visit to a page shows a skeleton while it loads; later visits keep the old view until the new one is ready.
 async function withSkeleton(page, render) {
   const node = $(`#page-${page}`);
+  // A page that already has content is refreshed in place: its entrance animations must not replay
+  // when the fresh data lands, or the page seems to load twice. The class stays until the next
+  // first visit (removing it would start the animations on the content that is already there).
+  node.classList.toggle("quiet", node.childElementCount > 0);
   if (!node.childElementCount) node.innerHTML = skeletonPage();
   node.setAttribute("aria-busy", "true");
   try {
@@ -751,7 +755,7 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
     const apply = () => {
       if (applied) return;
       applied = true;
-      applyPage(page);
+      applyPage(page, { animate: false }); // the view transition is the entrance
     };
     const transition = document.startViewTransition(apply);
     transition.finished.finally(() => root.classList.remove("page-switching"));
@@ -769,9 +773,18 @@ async function showPage(page, { updateHash = true, force = false } = {}) {
   applyPage(page);
 }
 
-function applyPage(page) {
+function applyPage(page, { animate = true } = {}) {
   $("#app").classList.toggle("subpage", page !== "ask");
-  $$(".workspace-page").forEach((view) => view.classList.toggle("active", view.dataset.view === page));
+  $$(".workspace-page").forEach((view) => {
+    view.classList.toggle("active", view.dataset.view === page);
+    view.classList.remove("enter");
+  });
+  if (animate && page !== "ask") {
+    const view = $(`#page-${page}`);
+    void view.offsetWidth; // restart the entrance
+    view.classList.add("enter");
+    view.addEventListener("animationend", (event) => event.target === view && view.classList.remove("enter"), { once: true });
+  }
   $$(".rail [data-page]").forEach((button) => {
     const on = button.dataset.page === page || (page === "document" && button.dataset.page === "knowledge");
     button.classList.toggle("active", on && !button.classList.contains("mark"));

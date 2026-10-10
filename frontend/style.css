@@ -312,7 +312,8 @@
       grid-column: 2 / -1; grid-row: 2; overflow-y: auto; display: none;
       padding: 38px clamp(28px, 4vw, 62px) 70px;
     }
-    .workspace-page.active { display: block; animation: rise .35s both; }
+    .workspace-page.active { display: block; }
+    .workspace-page.enter { animation: rise .35s both; }
     .app.subpage > .sidebar, .app.subpage > .main, .app.subpage > .inspector { display: none; }
     .app.subpage .mobile-source-toggle { display: none; }
     .page-content { max-width: 1320px; margin: 0 auto; }
@@ -1419,7 +1420,6 @@ button:not(:disabled):active, .btn:not(:disabled):active { transform: scale(.96)
 .theme-switching .rail, .theme-switching .topbar { view-transition-name: none; }
 .page-switching::view-transition-old(chrome-rail), .page-switching::view-transition-old(chrome-top) { display: none; }
 .page-switching::view-transition-new(chrome-rail), .page-switching::view-transition-new(chrome-top) { animation: none; }
-.page-switching .workspace-page.active { animation: none; }
 
 /* Answers arrive word by word */
 .turn.reveal .answer.words > * { animation: none; }
@@ -1598,3 +1598,8 @@ button:not(:disabled):active, .btn:not(:disabled):active { transform: scale(.96)
 .palette-search { transition: box-shadow .3s var(--ease-out); }
 .palette-search:focus-within { box-shadow: inset 0 -2px 0 var(--glow-line), inset 0 -18px 24px -18px var(--glow-aura); }
 .palette-search[data-typing] { box-shadow: inset 0 -3px 0 var(--glow-line-hi), inset 0 -22px 30px -18px var(--glow-aura-hi); }
+
+/* A page refreshed in place (data arrives after the old view was shown) must not replay its entrance */
+.workspace-page.quiet { animation: none !important; }
+/* (looping animations, like the pipeline's moving packets and upload progress, keep running) */
+.workspace-page.quiet :is(*, *::before, *::after):not(.packet, .upload-steps *, .needle-loader *, .sk) { animation: none !important; }
