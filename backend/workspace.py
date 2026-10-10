@@ -104,6 +104,8 @@ class WorkspaceStore:
         self._ensure_column("messages", "rewritten_query", "TEXT")
         self._ensure_column("document_policy", "content_hash", "TEXT")
         self._ensure_column("document_policy", "deleted", "INTEGER NOT NULL DEFAULT 0")
+        # Which version of the ingest logic built this document (see ingest.INGEST_REVISION).
+        self._ensure_column("document_policy", "ingest_rev", "TEXT NOT NULL DEFAULT ''")
         # Conversations belong to a visitor id; the signed-in owner (and every non-demo install) is 'owner'.
         self._ensure_column("conversations", "owner", "TEXT NOT NULL DEFAULT 'owner'")
         self._ensure_column("events", "outcome", "TEXT")
@@ -631,20 +633,22 @@ class WorkspaceStore:
             )
             self.conn.commit()
 
-    def set_policy(self, document_id: str, *, collection: str, byte_size: int, stored_name: str, content_hash: str = "") -> None:
+    def set_policy(self, document_id: str, *, collection: str, byte_size: int, stored_name: str, content_hash: str = "",
+                   ingest_rev: str = "") -> None:
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO document_policy (document_id, collection, included, citation_required, bytes, stored_name, content_hash, deleted)
-                VALUES (?, ?, 1, 1, ?, ?, ?, 0)
+                INSERT INTO document_policy (document_id, collection, included, citation_required, bytes, stored_name, content_hash, deleted, ingest_rev)
+                VALUES (?, ?, 1, 1, ?, ?, ?, 0, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     bytes = excluded.bytes,
                     stored_name = excluded.stored_name,
                     content_hash = excluded.content_hash,
+                    ingest_rev = COALESCE(NULLIF(excluded.ingest_rev, ''), ingest_rev),
                     deleted = 0,
                     included = 1
                 """,
-                (document_id, collection, byte_size, stored_name, content_hash),
+                (document_id, collection, byte_size, stored_name, content_hash, ingest_rev),
             )
             self.conn.commit()
 

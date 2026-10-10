@@ -13,7 +13,7 @@ import os
 
 from catalog import delete_document, get_all_documents
 from eval.corpus import corpus_files, stable_payload
-from ingest import process_document
+from ingest import INGEST_REVISION, process_document
 from workspace import WorkspaceStore
 
 log = logging.getLogger("needle.demo")
@@ -58,6 +58,23 @@ def _prune_stale(workspace: WorkspaceStore, names: set) -> int:
     return removed
 
 
+def _outdated(workspace: WorkspaceStore, digests: dict) -> dict:
+    """{name: [document ids]} of sample documents indexed by an older version of the ingest logic."""
+    policies = workspace.policies()
+    old: dict = {}
+    for doc in get_all_documents():
+        policy = policies.get(doc["id"]) or {}
+        if policy.get("collection") == COLLECTION and doc["name"] in digests and policy.get("ingest_rev") != INGEST_REVISION:
+            old.setdefault(doc["name"], []).append(doc["id"])
+    return old
+
+
+def _remove(workspace: WorkspaceStore, document_id: str) -> None:
+    workspace.tombstone(document_id)
+    delete_document(document_id)
+    workspace.forget_document(document_id)
+
+
 def seed_demo_corpus(workspace: WorkspaceStore) -> int:
     files = corpus_files(DEMO_DIR)
     digests = {name: hashlib.sha256(stable_payload(name, payload, DEMO_DIR)).hexdigest() for name, payload in files}
@@ -67,10 +84,13 @@ def seed_demo_corpus(workspace: WorkspaceStore) -> int:
     removed = _prune_duplicates(workspace, digests)
     if removed:
         log.info("Removed %d duplicate demo documents", removed)
+    # Documents built by an older ingest are rebuilt: the new copy goes in first and the old one is
+    # removed once it is searchable, so the demo is never empty while it happens.
+    outdated = _outdated(workspace, digests)
     added = 0
     for name, payload in files:
         digest = digests[name]
-        if workspace.find_hash(digest):
+        if workspace.find_hash(digest) and name not in outdated:
             continue
         content_type = "application/pdf" if name.endswith(".pdf") else "text/plain"
         try:
@@ -78,7 +98,12 @@ def seed_demo_corpus(workspace: WorkspaceStore) -> int:
         except Exception:
             log.exception("Could not seed %s", name)
             continue
-        workspace.set_policy(doc.id, collection=COLLECTION, byte_size=len(payload), stored_name="", content_hash=digest)
+        workspace.set_policy(doc.id, collection=COLLECTION, byte_size=len(payload), stored_name="", content_hash=digest,
+                             ingest_rev=INGEST_REVISION)
+        for old_id in outdated.get(name, []):
+            _remove(workspace, old_id)
+        if name in outdated:
+            log.info("Re-indexed %s with the current ingest (%s)", name, INGEST_REVISION)
         added += 1
     if added:
         workspace.record_run("Demo seed", f"Loaded {added} sample documents", "Success")
