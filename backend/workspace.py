@@ -111,6 +111,7 @@ class WorkspaceStore:
         self._ensure_column("events", "relevance", "REAL")
         self._ensure_column("events", "cited", "INTEGER")
         self._ensure_column("events", "reject_category", "TEXT")
+        self._ensure_column("feedback", "reason", "TEXT")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS eval_candidates (
@@ -195,6 +196,7 @@ class WorkspaceStore:
             ) AS source_threads
             FROM conversations c
             WHERE c.owner = ?
+              AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
         """
         params: List[Any] = [owner]
         if query.strip():
@@ -245,6 +247,33 @@ class WorkspaceStore:
             )
             self.conn.commit()
         return {"id": new_id, "title": "New conversation", "document_id": None, "created_at": now, "updated_at": now}
+
+    def rename_conversation(self, conversation_id: str, title: str, owner: str = "owner") -> Optional[Dict[str, Any]]:
+        title = " ".join(title.split())[:120]
+        if not title:
+            return None
+        with self._lock:
+            cursor = self.conn.execute(
+                "UPDATE conversations SET title = ? WHERE id = ? AND owner = ?", (title, conversation_id, owner)
+            )
+            self.conn.commit()
+        return {"id": conversation_id, "title": title} if cursor.rowcount else None
+
+    def delete_conversation(self, conversation_id: str, owner: str = "owner") -> bool:
+        with self._lock:
+            if not self.conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ? AND owner = ?", (conversation_id, owner)
+            ).fetchone():
+                return False
+            # Analytics events are kept: they record that a question was asked, not the conversation.
+            self.conn.execute(
+                "DELETE FROM feedback WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)",
+                (conversation_id,),
+            )
+            self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+            self.conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+            self.conn.commit()
+        return True
 
     def messages(self, conversation_id: str) -> List[Dict[str, Any]]:
         with self._lock:
@@ -316,8 +345,9 @@ class WorkspaceStore:
             self.conn.execute("UPDATE messages SET rewritten_query = ? WHERE id = ?", (rewritten[:500], message_id))
             self.conn.commit()
 
-    def set_feedback(self, message_id: str, rating: str, owner: str = "owner") -> bool:
-        if rating not in {"helpful", "unhelpful"}:
+    def set_feedback(self, message_id: str, rating: str, owner: str = "owner", reason: Optional[str] = None) -> bool:
+        """Record a rating ("helpful"/"unhelpful", with an optional reason), or clear it with "none"."""
+        if rating not in {"helpful", "unhelpful", "none"}:
             return False
         with self._lock:
             row = self.conn.execute(
@@ -329,11 +359,17 @@ class WorkspaceStore:
             ).fetchone()
             if not row:
                 return False
+            if rating == "none":
+                self.conn.execute("DELETE FROM feedback WHERE message_id = ?", (message_id,))
+                self.conn.commit()
+                return True
+            previous = self.conn.execute("SELECT rating FROM feedback WHERE message_id = ?", (message_id,)).fetchone()
             self.conn.execute(
-                "INSERT INTO feedback (message_id, rating, created_at) VALUES (?, ?, ?) ON CONFLICT(message_id) DO UPDATE SET rating = excluded.rating, created_at = excluded.created_at",
-                (message_id, rating, _now()),
+                "INSERT INTO feedback (message_id, rating, created_at, reason) VALUES (?, ?, ?, ?) ON CONFLICT(message_id) DO UPDATE SET rating = excluded.rating, created_at = excluded.created_at, reason = excluded.reason",
+                (message_id, rating, _now(), reason if rating == "unhelpful" else None),
             )
-            if rating == "unhelpful":
+            # A reason added after the thumbs-down is the same rating, not a second eval candidate.
+            if rating == "unhelpful" and not (previous and previous["rating"] == "unhelpful"):
                 question = self.conn.execute(
                     """
                     SELECT content FROM messages

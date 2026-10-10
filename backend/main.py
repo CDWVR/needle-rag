@@ -141,7 +141,12 @@ class PolicyPayload(BaseModel):
 
 
 class FeedbackPayload(BaseModel):
-    rating: Literal["helpful", "unhelpful"]
+    rating: Literal["helpful", "unhelpful", "none"]  # "none" clears a rating (undo)
+    reason: Optional[Literal["wrong_source", "incomplete", "should_answer", "other"]] = None
+
+
+class ConversationPayload(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
 
 
 class ResetPayload(BaseModel):
@@ -306,9 +311,24 @@ def read_conversation(request: Request, conversation_id: str = Path(pattern=UUID
     return {"messages": workspace.messages(conversation_id)}
 
 
+@app.patch("/api/conversations/{conversation_id}")
+def rename_conversation(payload: ConversationPayload, request: Request, conversation_id: str = Path(pattern=UUID)):
+    renamed = workspace.rename_conversation(conversation_id, payload.title, security.conversation_owner(request))
+    if not renamed:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return renamed
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(request: Request, conversation_id: str = Path(pattern=UUID)):
+    if not workspace.delete_conversation(conversation_id, security.conversation_owner(request)):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"ok": True}
+
+
 @app.post("/api/messages/{message_id}/feedback")
 def save_feedback(payload: FeedbackPayload, request: Request, message_id: str = Path(pattern=UUID)):
-    if not workspace.set_feedback(message_id, payload.rating, security.conversation_owner(request)):
+    if not workspace.set_feedback(message_id, payload.rating, security.conversation_owner(request), payload.reason):
         raise HTTPException(status_code=400, detail="Feedback could not be saved for that answer.")
     return {"ok": True, "rating": payload.rating}
 
@@ -485,12 +505,28 @@ def list_documents():
 
 
 @app.get("/api/documents/{document_id}")
-def read_document(document_id: str = Path(pattern=UUID)):
+def read_document(
+    document_id: str = Path(pattern=UUID),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(40, ge=1, le=200),
+    focus: Optional[str] = Query(None, max_length=200),
+):
     match = next((doc for doc in _documents() if doc["id"] == document_id and doc["status"] == "indexed"), None)
     if not match:
         raise HTTPException(status_code=404, detail="Document not found.")
     passages = document_passages(document_id)
-    return {**match, "passages": passages[:40], "passage_count": len(passages)}
+    # A citation link names the parent passage it came from; return a page that contains it.
+    focus_index = next((i for i, item in enumerate(passages) if focus and item["parent_id"] == focus), None)
+    if focus_index is not None:
+        offset = 0 if focus_index < 160 else focus_index - 20
+        limit = max(limit, focus_index - offset + 10)
+    return {
+        **match,
+        "passages": passages[offset:offset + limit],
+        "passage_count": len(passages),
+        "offset": offset,
+        "focus_index": focus_index,
+    }
 
 
 @app.patch("/api/documents/{document_id}")

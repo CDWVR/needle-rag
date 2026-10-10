@@ -47,7 +47,10 @@ VISITOR_ROUTES = {
     ("GET", "/api/documents"), ("GET", "/api/index"), ("GET", "/api/index/versions"), ("GET", "/api/eval/latest"),
     ("GET", "/api/analytics"), ("POST", "/api/chat"), ("POST", "/api/transcribe"),
 }
-VISITOR_PREFIXES = (("GET", "/api/conversations/"), ("GET", "/api/documents/"), ("POST", "/api/messages/"))
+VISITOR_PREFIXES = (
+    ("GET", "/api/conversations/"), ("PATCH", "/api/conversations/"), ("DELETE", "/api/conversations/"),  # own threads only
+    ("GET", "/api/documents/"), ("POST", "/api/messages/"),
+)
 PUBLIC_PREFIXES = ("/static/",)
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 

@@ -107,6 +107,53 @@ class ReadEndpointTests(unittest.TestCase):
         self.assertEqual(client.get("/api/analytics?days=5", headers=BEARER).status_code, 400)
 
 
+class ConversationTests(unittest.TestCase):
+    """Threads can be renamed, deleted, and are only listed once they hold a message."""
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+
+    def thread_with_answer(self):
+        conversation = main.workspace.ensure_conversation(None, "How heavy can a Tern-3 load be?", None)
+        main.workspace.add_message(conversation, "user", "How heavy can a Tern-3 load be?")
+        answer = main.workspace.add_message(conversation, "assistant", "120 kg [1].")
+        return conversation, answer
+
+    def listed(self):
+        return {item["id"] for item in self.client.get("/api/conversations", headers=BEARER).json()["conversations"]}
+
+    def test_empty_threads_are_not_listed(self):
+        empty = self.client.post("/api/conversations", headers=BEARER).json()["id"]
+        conversation, _ = self.thread_with_answer()
+        self.assertNotIn(empty, self.listed())
+        self.assertIn(conversation, self.listed())
+
+    def test_rename_and_delete(self):
+        conversation, answer = self.thread_with_answer()
+        renamed = self.client.patch(f"/api/conversations/{conversation}", headers=BEARER, json={"title": "  Tern-3   payload "})
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json()["title"], "Tern-3 payload")
+        self.assertEqual(self.client.patch(f"/api/conversations/{conversation}", headers=BEARER, json={"title": ""}).status_code, 422)
+        self.client.post(f"/api/messages/{answer}/feedback", headers=BEARER, json={"rating": "helpful"})
+        self.assertEqual(self.client.delete(f"/api/conversations/{conversation}", headers=BEARER).status_code, 200)
+        self.assertNotIn(conversation, self.listed())
+        self.assertEqual(self.client.get(f"/api/conversations/{conversation}", headers=BEARER).status_code, 404)
+        self.assertEqual(self.client.delete(f"/api/conversations/{conversation}", headers=BEARER).status_code, 404)
+        missing = "00000000-0000-4000-8000-000000000000"
+        self.assertEqual(self.client.patch(f"/api/conversations/{missing}", headers=BEARER, json={"title": "x"}).status_code, 404)
+
+    def test_feedback_reason_and_undo(self):
+        conversation, answer = self.thread_with_answer()
+        url = f"/api/messages/{answer}/feedback"
+        self.assertEqual(self.client.post(url, headers=BEARER, json={"rating": "unhelpful"}).status_code, 200)
+        self.assertEqual(self.client.post(url, headers=BEARER, json={"rating": "unhelpful", "reason": "wrong_source"}).status_code, 200)
+        self.assertEqual(self.client.post(url, headers=BEARER, json={"rating": "unhelpful", "reason": "made_up"}).status_code, 422)
+        rating = lambda: next(m for m in self.client.get(f"/api/conversations/{conversation}", headers=BEARER).json()["messages"] if m["id"] == answer)["rating"]
+        self.assertEqual(rating(), "unhelpful")
+        self.assertEqual(self.client.post(url, headers=BEARER, json={"rating": "none"}).status_code, 200)
+        self.assertIsNone(rating())
+
+
 class HeaderTests(unittest.TestCase):
     def test_security_headers_on_pages_and_errors(self):
         client = TestClient(main.app)
