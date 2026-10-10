@@ -39,6 +39,7 @@ limit on the OpenRouter key (below).
    | `NEEDLE_ACCESS_TOKEN` | a long random string (32+ characters); this is *your* owner sign-in |
    | `NEEDLE_COOKIE_SECURE` | `true` |
    | `NEEDLE_DEMO_DAILY_QUESTIONS` | optional, default `300` |
+   | `NEEDLE_BUG_WEBHOOK_URL` | optional: a Slack or Discord incoming-webhook URL; each bug report posts a one-line summary and a link to Settings → Bug reports |
 
    For the Voice button, add `OPENROUTER_STT_API_KEY`: a **second** OpenRouter key with its own
    credit limit of **$1 or more**: OpenRouter rejects audio requests (HTTP 402) when the key has less

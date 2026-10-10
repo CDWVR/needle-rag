@@ -98,6 +98,22 @@ export const api = {
     if (!response.ok) throw new ApiError(errorMessage(data, "Voice input failed"), response.status, data?.detail);
     return data;
   },
+  sendBugReport: async ({ description, page, viewport, theme, screenshot }) => {
+    const body = new FormData();
+    body.append("description", description);
+    body.append("page", page);
+    body.append("viewport", viewport);
+    body.append("theme", theme);
+    if (screenshot) body.append("screenshot", screenshot, "screenshot.jpg");
+    const response = await request("/api/bug-reports", { method: "POST", body });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ApiError(errorMessage(data, "The report could not be sent. Try again."), response.status, data?.detail);
+    return data;
+  },
+  bugReports: () => json("/api/bug-reports"),
+  setBugStatus: (reportId, status) => json(`/api/bug-reports/${id(reportId)}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  deleteBugReport: (reportId) => json(`/api/bug-reports/${id(reportId)}`, { method: "DELETE" }),
+  bugScreenshotUrl: (reportId) => `/api/bug-reports/${id(reportId)}/screenshot`,
   upload: async (file) => {
     const body = new FormData();
     body.append("file", file);

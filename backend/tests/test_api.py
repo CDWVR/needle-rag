@@ -195,6 +195,51 @@ class HeaderTests(unittest.TestCase):
         self.assertEqual(client.get("/api/settings", headers=BEARER).headers["cache-control"], "no-store")
 
 
+class BugReportTests(unittest.TestCase):
+    JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64 + b"\xff\xd9"
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        main.security.limiter._hits.clear()
+
+    def send(self, description="The answer panel jumps when I scroll", screenshot=JPEG, **extra):
+        files = {"screenshot": ("shot.jpg", screenshot, "image/jpeg")} if screenshot is not None else None
+        return self.client.post("/api/bug-reports", headers={**BEARER, **WRITE},
+                                data={"description": description, "page": "#ask", "viewport": "1440×900", **extra}, files=files)
+
+    def test_owner_reads_resolves_and_deletes_a_report(self):
+        sent = self.send()
+        self.assertEqual(sent.status_code, 201, sent.text)
+        report_id = sent.json()["id"]
+        listing = self.client.get("/api/bug-reports", headers=BEARER).json()
+        report = next(item for item in listing["reports"] if item["id"] == report_id)
+        self.assertEqual((report["page"], report["has_screenshot"], report["status"]), ("#ask", True, "open"))
+        image = self.client.get(f"/api/bug-reports/{report_id}/screenshot", headers=BEARER)
+        self.assertEqual((image.status_code, image.headers["content-type"], image.content), (200, "image/jpeg", self.JPEG))
+        self.assertEqual(image.headers["x-content-type-options"], "nosniff")
+        resolved = self.client.patch(f"/api/bug-reports/{report_id}", headers={**BEARER, **WRITE}, json={"status": "resolved"})
+        self.assertEqual(resolved.json()["status"], "resolved")
+        self.assertEqual(self.client.delete(f"/api/bug-reports/{report_id}", headers={**BEARER, **WRITE}).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/bug-reports/{report_id}/screenshot", headers=BEARER).status_code, 404)
+
+    def test_reports_without_a_screenshot_are_fine(self):
+        sent = self.send(screenshot=None)
+        self.assertEqual(sent.status_code, 201)
+        self.assertEqual(self.client.get(f"/api/bug-reports/{sent.json()['id']}/screenshot", headers=BEARER).status_code, 404)
+
+    def test_bad_reports_are_rejected(self):
+        self.assertEqual(self.send(description="hi").status_code, 400)
+        self.assertEqual(self.send(screenshot=b"<svg onload=alert(1)>").status_code, 400)  # not a JPEG or PNG
+        too_big = b"\xff\xd8\xff" + b"\x00" * (5 * 1024 * 1024) + b"\xff\xd9"
+        self.assertEqual(self.send(screenshot=too_big).status_code, 413)
+
+    def test_text_is_cleaned(self):
+        sent = self.send(description="Line one\r\nLine two\x00\x07", page="#ask\x1b[31m")
+        report = next(item for item in self.client.get("/api/bug-reports", headers=BEARER).json()["reports"] if item["id"] == sent.json()["id"])
+        self.assertEqual(report["description"], "Line one\nLine two")
+        self.assertEqual(report["page"], "#ask[31m")
+
+
 class UploadTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)

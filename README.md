@@ -16,12 +16,14 @@
 - **⚡ Hybrid search** — Vector hits above a cosine floor are fused (RRF) with BM25 keyword hits and, when the question names a code such as `E-104` or `TERN-SCALE`, an exact-phrase match list.
 - **⚖️ Jev reranking** — [Jev](https://pypi.org/project/jev-reranker/) scores every surviving passage for usefulness as evidence and discards the ones that only share a topic. Parent chunks are loaded after that decision.
 - **🏗️ Parent-Child Chunking** — Granular 400-char child chunks for laser-focused semantic retrieval, seamlessly mapped back to massive 2,000-char parent chunks to preserve surrounding context.
+- **🧹 Near-duplicate folding** — Build-up slides, repeated boilerplate, and duplicate pages are detected by word-shingle containment. At upload a repeated passage is folded into the fullest version (its search units stay, pointing at it); at search time near-duplicates of one document share a single result slot. Passages from different documents are never merged.
 - **📊 Metadata Scaffolding** — Automatically extracts Markdown headers (Chapters/Sections) to provide spatial awareness to citations.
 - **📄 Multi-Modal Parsing** — Processes text-based PDFs, DOCX, PPTX, and XLSX using `PyMuPDF` and Microsoft's `MarkItDown`.
 - **🆓 Unlimited Free Embeddings** — Swapped out cloud embeddings for local, highly-optimized `all-MiniLM-L6-v2` running via ONNX Runtime for zero rate limits and maximum privacy.
 - **🚀 Non-blocking Ingestion** — Uploads are parsed and embedded on a worker thread, so a 400-page textbook does not stall chat or other requests.
 - **🧪 Production eval** — A repo-owned test corpus and golden set run through the exact production pipeline, gated in CI. See [Evaluation](#-evaluation).
 - **🎨 Workspace UI** — Ask, knowledge base, document detail, pipeline, analytics, and settings views with retrieval traces and source inspection. Light and dark themes (System / Light / Dark in the account menu or the Ctrl K command menu), page transitions, and motion that respects the reduced-motion setting.
+- **🐞 Bug reporter** — The bug button in the top bar captures the page as it looks (no third-party code), flashes like a phone screenshot, and opens a short form. Reports land in Settings → Bug reports, owner-only; set `NEEDLE_BUG_WEBHOOK_URL` to get a Slack or Discord message for each one. Demo visitors can send reports but never read them, and sending is rate-limited.
 
 ---
 

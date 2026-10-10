@@ -47,6 +47,7 @@ from pipeline_logic import (
     NO_EVIDENCE_FALLBACK,
     NeedleError,
     RETRIEVAL_RERANK_MODES,
+    collapse_redundant_candidates,
     confidence_bucket,
     deterministic_violation_details,
     extract_json_object,
@@ -407,7 +408,18 @@ def _fused_candidates(
         # Codes like E-104 or ADD-COLD carry the meaning of the question; give exact matches their own vote.
         lists.append(_keyword_candidates(
             query, document_id, top_k=width, exclude_ids=exclude_ids, fts_query=" OR ".join(phrases)))
-    return reciprocal_rank_fusion(lists, k=opts.rrf_k)
+    fused = reciprocal_rank_fusion(lists, k=opts.rrf_k)
+    # Near-duplicates of one passage (repeated slides, boilerplate) share a slot, so they cannot crowd
+    # other evidence out of the reranker's window. This also covers documents indexed before ingest
+    # started merging them. Whole passages are compared, never the small search units: two different
+    # slides can share a footer without being duplicates.
+    missing = [item["parent_id"] for item in fused if not item.get("parent_text") and item.get("parent_id")]
+    if missing:
+        stored = store.fetch_parents(missing)
+        for item in fused:
+            if not item.get("parent_text") and item.get("parent_id") in stored:
+                item["parent_text"] = stored[item["parent_id"]]["parent_text"] or ""
+    return collapse_redundant_candidates(fused)
 
 
 def _score_candidates(

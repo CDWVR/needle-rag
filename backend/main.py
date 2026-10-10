@@ -21,8 +21,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+import bug_reports
 import security
 from catalog import (
     delete_document,
@@ -56,6 +58,7 @@ HISTORY_TURNS = 20
 UUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 workspace = WorkspaceStore(data_path("workspace.db"))
+bug_store = bug_reports.BugReports(data_path("bug_reports"))
 ingestion = IngestionQueue(workspace, UPLOAD_DIR)
 
 
@@ -603,6 +606,87 @@ def transcribe_audio(
         status = 429 if "limit" in str(exc) else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     return {"text": text}
+
+
+# --- bug reports --------------------------------------------------------------------------------
+
+BUG_STATUS = Literal["open", "resolved"]
+
+
+class BugStatusPayload(BaseModel):
+    status: BUG_STATUS
+
+
+@app.post("/api/bug-reports", status_code=201)
+async def create_bug_report(request: Request):
+    """A description plus an optional screenshot. Visitors may send one, so the body is bounded
+    before it is parsed and every field is cleaned; only the owner can read reports back."""
+    security.rate_limit(request, "bug_report")
+    security.rate_limit(request, "bug_report_day")
+    security.limiter.check("bug_report_global", "all")
+    declared = request.headers.get("content-length") or ""
+    if not declared.isdigit():
+        raise HTTPException(status_code=411, detail="Send the report from the app.")
+    if int(declared) > bug_reports.MAX_SCREENSHOT_BYTES + 64 * 1024:
+        raise HTTPException(status_code=413, detail="The screenshot is too large to send.")
+    try:
+        form = await request.form(max_files=1, max_fields=8, max_part_size=16 * 1024)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="The report could not be read. Try again.") from exc
+    description = str(form.get("description") or "")
+    if len(bug_reports.clean_text(description, bug_reports.MAX_DESCRIPTION)) < 5:
+        raise HTTPException(status_code=400, detail="Describe the problem in a few words.")
+    screenshot = None
+    upload = form.get("screenshot")
+    if upload is not None and not isinstance(upload, str):
+        screenshot = await upload.read(bug_reports.MAX_SCREENSHOT_BYTES + 1)
+        if len(screenshot) > bug_reports.MAX_SCREENSHOT_BYTES:
+            raise HTTPException(status_code=413, detail="The screenshot is too large to send.")
+        if not bug_reports.image_kind(screenshot):
+            raise HTTPException(status_code=400, detail="The screenshot is not a valid image.")
+    report = await run_in_threadpool(
+        bug_store.add,
+        role=request.state.role,
+        reporter=security.conversation_owner(request),
+        description=description,
+        page=str(form.get("page") or ""),
+        viewport=str(form.get("viewport") or ""),
+        theme=str(form.get("theme") or ""),
+        user_agent=request.headers.get("user-agent", ""),
+        screenshot=screenshot,
+    )
+    webhook = env_str("NEEDLE_BUG_WEBHOOK_URL", "")
+    if webhook:
+        bug_reports.announce(webhook, report, str(request.base_url).rstrip("/") + "/#settings/reports")
+    return {"id": report["id"], "ok": True}
+
+
+@app.get("/api/bug-reports")
+def list_bug_reports():
+    return {"reports": bug_store.list(), "open": bug_store.open_count()}
+
+
+@app.get("/api/bug-reports/{report_id}/screenshot")
+def bug_report_screenshot(report_id: str = Path(pattern=UUID)):
+    path = bug_store.screenshot_path(report_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="This report has no screenshot.")
+    media = "image/png" if path.endswith(".png") else "image/jpeg"
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "private, no-store"})
+
+
+@app.patch("/api/bug-reports/{report_id}")
+def update_bug_report(payload: BugStatusPayload, report_id: str = Path(pattern=UUID)):
+    if not bug_store.set_status(report_id, payload.status):
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True, "status": payload.status, "open": bug_store.open_count()}
+
+
+@app.delete("/api/bug-reports/{report_id}")
+def delete_bug_report(report_id: str = Path(pattern=UUID)):
+    if not bug_store.delete(report_id):
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True, "open": bug_store.open_count()}
 
 
 # --- chat ---------------------------------------------------------------------------------------

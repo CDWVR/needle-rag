@@ -18,7 +18,10 @@ from pipeline_logic import (
     RETRIEVAL_RERANK_MODES,
     ScoreCache,
     classify_http_infra_error,
+    collapse_redundant_candidates,
     confidence_bucket,
+    passage_hosts,
+    redundant_passages,
     contextual_passage,
     corpus_contains_number,
     corpus_contains_span,
@@ -254,6 +257,78 @@ class PipelineLogicTests(unittest.TestCase):
         card = index_card("Safety", "\n\nWear gloves.\nMore detail.")
         self.assertIn("Safety", card)
         self.assertIn("Wear gloves.", card)
+
+
+class NearDuplicateTests(unittest.TestCase):
+    # A slide that builds up one bullet at a time: each version repeats the one before.
+    build = [
+        "Why copy the input? If the only purpose of autoencoders was to copy the input they would be useless.",
+        "Why copy the input? If the only purpose of autoencoders was to copy the input they would be useless. "
+        "We hope the latent representation h will take on useful properties.",
+        "Why copy the input? If the only purpose of autoencoders was to copy the input they would be useless. "
+        "We hope the latent representation h will take on useful properties. Constraints on the copying task achieve this.",
+    ]
+
+    def test_build_up_slides_keep_only_the_fullest_version(self):
+        self.assertEqual(redundant_passages(self.build), [0, 1])
+        self.assertEqual(passage_hosts(self.build), {0: 2, 1: 2})  # every step points at the complete slide
+
+    def test_folded_duplicates_do_not_add_up_to_outrank_a_unique_passage(self):
+        ranked = [
+            {**self.candidate("p9", "Recurrent networks reuse the same weights across time steps of a sequence."), "rrf_score": 0.03},
+            {**self.candidate("p1", self.build[0]), "rrf_score": 0.02},
+            {**self.candidate("p2", self.build[1]), "rrf_score": 0.02},
+        ]
+        collapsed = collapse_redundant_candidates(ranked)
+        self.assertEqual([item["parent_id"] for item in collapsed], ["p9", "p2"])
+        self.assertAlmostEqual(collapsed[1]["rrf_score"], 0.02)
+
+    def test_a_candidate_without_its_passage_text_is_never_folded(self):
+        ranked = [self.candidate("p3", self.build[2]), {**self.candidate("p1", ""), "text": self.build[0]}]
+        self.assertEqual(len(collapse_redundant_candidates(ranked)), 2)
+
+    def test_exact_duplicates_keep_the_first(self):
+        page = "Disclaimer: these slides were prepared from various sources for teaching purposes."
+        self.assertEqual(redundant_passages([page, "Something else entirely, about recurrent networks and gates.", page]), [2])
+
+    def test_passages_that_only_share_a_topic_are_kept(self):
+        texts = [
+            "The forget gate decides what to discard from the cell state of an LSTM unit.",
+            "The input gate decides what new information to write into the cell state of an LSTM unit.",
+            "Overlapping sections share a sentence. The forget gate decides what to discard from the cell state of an LSTM unit. More follows.",
+        ]
+        self.assertEqual(redundant_passages(texts), [0])  # the first is wholly inside the third
+        self.assertEqual(redundant_passages(texts[:2]), [])
+
+    def test_short_title_pages_fold_into_a_page_that_says_more(self):
+        texts = ["Autoencoders", "7", "Autoencoders are networks that copy their input to their output.", "7"]
+        self.assertEqual(redundant_passages(texts), [0, 3])  # the title folds in; of two identical "7"s the first stays
+
+    def candidate(self, parent, text, document="doc-a", page=1):
+        return {"chunk_id": f"{parent}_0", "parent_id": parent, "parent_text": text, "text": text[:40],
+                "document_id": document, "page_number": page}
+
+    def test_candidates_from_one_document_share_a_slot_with_the_fuller_text(self):
+        ranked = [
+            self.candidate("p1", self.build[0], page=8),
+            self.candidate("p9", "Recurrent networks reuse the same weights across time steps of a sequence.", page=2),
+            self.candidate("p3", self.build[2], page=10),
+            self.candidate("p2", self.build[1], page=9),
+        ]
+        collapsed = collapse_redundant_candidates(ranked)
+        self.assertEqual([item["chunk_id"] for item in collapsed], ["p1_0", "p9_0"])
+        self.assertEqual(collapsed[0]["parent_id"], "p3")  # first slot, fullest passage
+        self.assertEqual(collapsed[0]["page_number"], 10)
+        self.assertTrue(collapsed[0]["merged_duplicate"])
+
+    def test_candidates_from_different_documents_are_never_merged(self):
+        policy = "Hotel nights are capped at 180 EUR in Berlin, Paris and London for all employees."
+        ranked = [self.candidate("a1", policy, "policy-2025"), self.candidate("b1", policy, "policy-2026")]
+        self.assertEqual(len(collapse_redundant_candidates(ranked)), 2)
+
+    def test_children_of_one_parent_are_left_for_parent_selection(self):
+        ranked = [self.candidate("p1", self.build[2]), {**self.candidate("p1", self.build[2]), "chunk_id": "p1_1"}]
+        self.assertEqual(len(collapse_redundant_candidates(ranked)), 2)
 
 
 class IndexStoreTests(unittest.TestCase):

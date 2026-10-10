@@ -24,7 +24,7 @@ from catalog import (
     store,
 )
 from embedder import embed
-from pipeline_logic import contextual_passage, index_card, tokenize
+from pipeline_logic import contextual_passage, index_card, passage_hosts, tokenize
 
 log = logging.getLogger("needle")
 
@@ -151,6 +151,13 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
         parent_chunks = parent_splitter.split_documents(md_splits)
         if not parent_chunks:
             raise ValueError("No meaningful text chunks could be created.")
+        # Build-up slides, repeated boilerplate, duplicate pages: a passage that repeats a fuller one is
+        # not stored as a passage of its own. Its search units stay (repetition is still a signal for
+        # search) but point at the fuller passage, so results show it once, complete.
+        hosts = passage_hosts([chunk.page_content for chunk in parent_chunks])
+        if hosts:
+            log.info("%s: %d of %d passages repeat a fuller passage and were folded into it",
+                     filename, len(hosts), len(parent_chunks))
 
         ids: List[str] = []
         texts: List[str] = []
@@ -159,20 +166,23 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
         fts_rows: List[tuple] = []
 
         for parent_index, parent in enumerate(parent_chunks):
-            header = header_context(parent.metadata)
-            page_number = int(parent.metadata.get("page", 1) or 1)
-            parent_key = f"{document_id}_{parent_index}"
+            host_index = hosts.get(parent_index, parent_index)
+            host = parent_chunks[host_index]
+            header = header_context(host.metadata)
+            page_number = int(host.metadata.get("page", 1) or 1)
+            parent_key = f"{document_id}_{host_index}"
             summary = index_card(header, parent.page_content)
-            parent_rows.append(
-                {
-                    "parent_id": parent_key,
-                    "page_number": page_number,
-                    "chunk_index": parent_index,
-                    "header_context": header,
-                    "parent_text": parent.page_content,
-                    "summary": summary,
-                }
-            )
+            if host_index == parent_index:
+                parent_rows.append(
+                    {
+                        "parent_id": parent_key,
+                        "page_number": page_number,
+                        "chunk_index": parent_index,
+                        "header_context": header,
+                        "parent_text": parent.page_content,
+                        "summary": summary,
+                    }
+                )
             children = child_splitter.split_text(parent.page_content)
             if chunking == "Index card summary":
                 card = summary or parent.page_content[:CHILD_CHUNK_SIZE]
@@ -184,11 +194,14 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
                 if summary and all(summary != child_text for _, _, child_text in units):
                     units.append(("index_card", len(children), summary))
 
+            # A unit id starts with its passage's id (the keyword index derives the passage from it).
+            # Units of a folded copy keep their own suffix so ids stay unique.
+            copy = "" if host_index == parent_index else f"c{parent_index}-"
             for unit_type, child_index, passage in units:
                 chunk_id = (
-                    f"{document_id}_{parent_index}_card"
+                    f"{parent_key}_{copy}card"
                     if unit_type == "index_card"
-                    else f"{document_id}_{parent_index}_{child_index}"
+                    else f"{parent_key}_{copy}{child_index}"
                 )
                 ids.append(chunk_id)
                 texts.append(passage)
@@ -197,7 +210,7 @@ def process_document(file_bytes: bytes, filename: str, file_type: str, chunking:
                         "document_id": document_id,
                         "document_name": filename,
                         "page_number": page_number,
-                        "chunk_index": parent_index,
+                        "chunk_index": host_index,
                         "header_context": header,
                         "parent_id": parent_key,
                         "unit_type": unit_type,
