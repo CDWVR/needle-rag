@@ -265,11 +265,8 @@ class WorkspaceStore:
                 "SELECT 1 FROM conversations WHERE id = ? AND owner = ?", (conversation_id, owner)
             ).fetchone():
                 return False
-            # Analytics events are kept: they record that a question was asked, not the conversation.
-            self.conn.execute(
-                "DELETE FROM feedback WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)",
-                (conversation_id,),
-            )
+            # Analytics are workspace-wide aggregates: the events and ratings stay when a visitor tidies
+            # up their own history, so deleting a thread never changes the numbers everyone sees.
             self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
             self.conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
             self.conn.commit()

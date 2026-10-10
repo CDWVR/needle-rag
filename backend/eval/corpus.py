@@ -35,19 +35,21 @@ def _render_pdf(source: str) -> bytes:
     return document.tobytes(deflate=True, garbage=3)
 
 
-def corpus_files() -> List[Tuple[str, bytes]]:
-    """(file name as uploaded, bytes) for every corpus document, in a stable order."""
+def corpus_files(directory: str = CORPUS_DIR) -> List[Tuple[str, bytes]]:
+    """(file name as uploaded, bytes) for every document in a corpus folder, in a stable order."""
     files = []
-    for name in sorted(os.listdir(CORPUS_DIR)):
-        path = os.path.join(CORPUS_DIR, name)
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
         if not os.path.isfile(path) or name.startswith((".", "_")):
             continue
         if name.endswith(".pdf.txt"):
             files.append((name[: -len(".txt")], _render_pdf(path)))
         else:
             with open(path, "rb") as handle:
-                # Same bytes on every platform, so chunk boundaries (and metrics) match CI.
-                files.append((name, handle.read().replace(b"\r\n", b"\n")))
+                data = handle.read()
+            # Text is normalized to the same bytes on every platform, so chunk boundaries (and metrics)
+            # match CI. A real PDF is binary and is used exactly as it is.
+            files.append((name, data if name.endswith(".pdf") else data.replace(b"\r\n", b"\n")))
     return files
 
 
@@ -59,10 +61,12 @@ def corpus_fingerprint() -> str:
     return digest.hexdigest()[:16]
 
 
-def stable_payload(name: str, payload: bytes) -> bytes:
+def stable_payload(name: str, payload: bytes, directory: str = CORPUS_DIR) -> bytes:
     # Rendered PDFs embed object ids that can differ between PyMuPDF builds; fingerprint the source instead.
-    if name.endswith(".pdf"):
-        with open(os.path.join(CORPUS_DIR, name + ".txt"), "rb") as handle:
+    # A real PDF (no .txt source beside it) is its own stable payload.
+    source = os.path.join(directory, name + ".txt")
+    if name.endswith(".pdf") and os.path.exists(source):
+        with open(source, "rb") as handle:
             return handle.read()
     return payload
 

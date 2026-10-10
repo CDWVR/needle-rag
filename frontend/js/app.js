@@ -40,10 +40,10 @@ const state = {
 
 const isOwner = () => state.role === "owner";
 const SAMPLE_QUESTIONS = [
-  "How long did the Fleet Manager outage in March 2026 last, and what caused it?",
-  "What is the rated payload of the Tern-3 cart?",
-  "How did the nightly hotel cap change between the 2025 and 2026 travel policies?",
-  "What gates must a second lidar supplier pass before a purchase order is raised?",
+  "What is the vanishing gradient problem in RNNs, and how is it mitigated?",
+  "What is the difference between an LSTM and a GRU?",
+  "What is the difference between global and local attention?",
+  "How does reciprocal rank fusion combine BM25 and dense retrieval results?",
 ];
 const ACCEPTED = /\.(pdf|txt|md|text|docx|pptx|xlsx|csv)$/i;
 const RETRIEVAL_DEFAULTS = { top_k: 30, similarity_threshold: 0.3, max_parents: 5, rrf_k: 60 };
@@ -920,12 +920,12 @@ function emptyState() {
   }
   const noDocs = !docs.length && !state.demo;
   const heading = state.demo
-    ? "Ask a question about the sample documents."
+    ? "Ask a question about machine learning."
     : noDocs
       ? "Start by adding a document."
       : "Ask across the documents you have indexed.";
   const text = state.demo
-    ? "This demo has a small set of fictional company documents loaded: manuals, policies, an incident report, and pricing. Every answer cites the passages it came from, and the system says so when the documents do not answer."
+    ? "This demo has a few machine-learning documents loaded: notes on RNNs and on information retrieval, an attention-mechanism deck, and a short course on autoencoders. Every answer cites the passages it came from, and the system says so when the documents do not answer."
     : noDocs
       ? "Needle answers only from what you upload, and every answer shows the passage it came from."
       : "Every answer shows the passages it came from. When your documents don't cover a question, Needle says so.";
