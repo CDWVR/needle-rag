@@ -70,7 +70,7 @@ CROSS_ENCODER_MODEL = env_str("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-Min
 TOP_K_CHILDREN = env_int("NEEDLE_TOP_K", 30)
 VECTOR_SIMILARITY_THRESHOLD = env_float("NEEDLE_SIMILARITY_THRESHOLD", 0.30)
 RRF_K = env_int("NEEDLE_RRF_K", 60)
-MAX_PARENTS = 5
+MAX_PARENTS = env_int("NEEDLE_MAX_PARENTS", 5)
 RETRY_THRESHOLD = env_float("RETRY_THRESHOLD", 0.35)
 RETRY_TOP_K = env_int("RETRY_TOP_K", 40)
 RELATED_LIMIT = env_int("RELATED_LIMIT", 3)
@@ -84,10 +84,11 @@ CIRCUIT_RESET_SECONDS = env_float("CIRCUIT_RESET_SECONDS", 60)
 # --- Ingestion -------------------------------------------------------------------
 EMBEDDING_MODEL_ID = "all-MiniLM-L6-v2"
 CHUNKING_STRATEGIES = ("Parent-child", "Fixed window", "Index card summary")
-PARENT_CHUNK_SIZE = 2000
-PARENT_CHUNK_OVERLAP = 200
-CHILD_CHUNK_SIZE = 400
-CHILD_CHUNK_OVERLAP = 50
+# Chunk sizes apply to documents ingested after a change; Refresh index rebuilds the rest.
+PARENT_CHUNK_SIZE = env_int("PARENT_CHUNK_SIZE", 2000)
+PARENT_CHUNK_OVERLAP = env_int("PARENT_CHUNK_OVERLAP", 200)
+CHILD_CHUNK_SIZE = env_int("CHILD_CHUNK_SIZE", 400)
+CHILD_CHUNK_OVERLAP = env_int("CHILD_CHUNK_OVERLAP", 50)
 OCR_ENABLED = env_bool("OCR_ENABLED", False)
 
 # --- Index refresh gate ----------------------------------------------------------

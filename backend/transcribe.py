@@ -33,7 +33,7 @@ STT_DAILY_USD = env_float("STT_DAILY_USD", 0.01)
 STT_RESERVE_PER_SECOND = env_float("STT_RESERVE_PER_SECOND", 0.0001)
 # 15 s of browser Opus is about 60 KB; this leaves room for other codecs but bounds a crafted upload.
 STT_MAX_BYTES = env_int("STT_MAX_BYTES", 200_000)
-STT_TIMEOUT_SECONDS = 30
+STT_TIMEOUT_SECONDS = env_float("STT_TIMEOUT_SECONDS", 30)
 
 
 def stt_key() -> str:
