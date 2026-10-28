@@ -4,7 +4,9 @@ local embedder) but no network: OpenRouter is disabled, so chat is never exercis
     python -m unittest discover -s backend/tests -t backend
 """
 
+import base64
 import io
+import json
 import os
 import sys
 import tempfile
@@ -73,11 +75,25 @@ class AuthTests(unittest.TestCase):
         self.client.post("/api/auth/logout", headers=WRITE)
         self.assertEqual(self.client.get("/api/settings").status_code, 401)
 
+    def _with_only_session(self, value):
+        """Request /api/settings carrying exactly one session cookie. cookies.set() on the logged-in
+        client would add a second cookie next to the real one (different domain), and the server
+        would rightly accept the valid one, so each attempt uses a clean client."""
+        return TestClient(main.app).get("/api/settings", headers={"Cookie": f"needle_session={value}"}).status_code
+
     def test_tampered_session_is_rejected(self):
         self.client.post("/api/auth/login", json={"token": TOKEN})
         value = self.client.cookies.get("needle_session")
-        self.client.cookies.set("needle_session", value[:-2] + ("00" if value[-2:] != "00" else "11"))
-        self.assertEqual(self.client.get("/api/settings").status_code, 401)
+        encoded, signature = value.rsplit(".", 1)
+        self.assertEqual(self._with_only_session(value), 200)  # the untouched cookie works
+        # A changed signature.
+        self.assertEqual(self._with_only_session(f"{encoded}.{signature[:-2]}{'00' if signature[-2:] != '00' else '11'}"), 401)
+        # A forged payload (a far-future expiry) kept with the original signature.
+        forged = base64.urlsafe_b64encode(json.dumps({"exp": 4102444800, "n": "x"}).encode()).decode().rstrip("=")
+        self.assertEqual(self._with_only_session(f"{forged}.{signature}"), 401)
+        # Garbage and missing signatures.
+        for junk in ("", "no-dot", f"{encoded}.", ".", "!!!.abc"):
+            self.assertEqual(self._with_only_session(junk), 401, junk)
 
     def test_login_is_rate_limited(self):
         client = TestClient(main.app)
